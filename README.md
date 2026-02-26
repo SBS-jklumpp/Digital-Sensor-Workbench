@@ -6,14 +6,14 @@ This file is the primary end-user guide and is the source opened by the in-app `
 
 ## Start Here
 
-- New user: go to [5-Minute Quickstart](#5-minute-quickstart)
+- New user: go to [Fast Path](docs/QUICKSTART_ONE_PAGE.md#fast-path)
 - Need a specific control name: go to [Panel Reference](#panel-reference)
 
 ## Quick Navigation
 
 | I need to... | Go here |
 |---|---|
-| connect ports and start a test | [5-Minute Quickstart](#5-minute-quickstart) |
+| connect ports and start a test | [Fast Path](docs/QUICKSTART_ONE_PAGE.md#fast-path) |
 | understand every button in the app | [Panel Reference](#panel-reference) |
 | change parser fields and units | [Generic Sample Format (Parser + Mapping)](#generic-sample-format-parser--mapping) |
 | compare current run to an old session | [Session Plot and Comparison](#session-plot-and-comparison) |
@@ -24,7 +24,7 @@ This file is the primary end-user guide and is the source opened by the in-app `
 
 | Question | Short answer | Details |
 |---|---|---|
-| How do I start a run fast? | Connect port, fill `Operator`, set `Samples`, click `Run Test`. | [5-Minute Quickstart](#5-minute-quickstart) |
+| How do I start a run fast? | Connect port, fill `Operator`, set `Samples`, click `Run Test`. | [Fast Path](docs/QUICKSTART_ONE_PAGE.md#fast-path) |
 | Why is `Run Test` disabled? | No connected port, missing `Operator`, or run already active. | [Troubleshooting by Symptom](#troubleshooting-by-symptom) |
 | Where do I change parser settings? | Open `Config` or `Show Setup` in `Live Plot`. | [Generic Sample Format (Parser + Mapping)](#generic-sample-format-parser--mapping) |
 | How do I compare to a previous session? | Open `Session Plot`, then load a reference session JSON. | [Session Plot and Comparison](#session-plot-and-comparison) |

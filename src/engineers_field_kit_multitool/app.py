@@ -12,6 +12,7 @@ import threading
 import time
 import tkinter as tk
 import webbrowser
+from urllib.parse import urljoin
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 import mistune
@@ -1551,6 +1552,29 @@ class SBE83GuiApp:
         except Exception:
             return None
 
+    @staticmethod
+    def _rewrite_help_links(html_text, page_uri, base_uri):
+        """Normalize links in rendered help HTML for temp-file viewing."""
+        if not html_text:
+            return html_text
+        abs_scheme = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
+        href_re = re.compile(r'href=(["\'])(.*?)\1', re.IGNORECASE)
+
+        def repl(match):
+            quote = match.group(1)
+            href = (match.group(2) or "").strip()
+            if not href:
+                return match.group(0)
+            if href.startswith("#"):
+                new_href = f"{page_uri}{href}"
+            elif href.startswith("//") or abs_scheme.match(href):
+                new_href = href
+            else:
+                new_href = urljoin(base_uri, href)
+            return f'href={quote}{html.escape(new_href, quote=True)}{quote}'
+
+        return href_re.sub(repl, html_text)
+
     def _open_contact_email(self):
         try:
             webbrowser.open(f"mailto:{APP_CONTACT_EMAIL}")
@@ -1669,12 +1693,15 @@ class SBE83GuiApp:
             base_href = readme_path.parent.resolve().as_uri()
             if not base_href.endswith("/"):
                 base_href += "/"
+            with tempfile.NamedTemporaryFile("w", delete=False, suffix="_engineers_field_kit_help.html", encoding="utf-8") as f:
+                temp_path = Path(f.name)
+            page_uri = temp_path.resolve().as_uri()
+            body_html = self._rewrite_help_links(body_html, page_uri, base_href)
             page = f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <base href="{html.escape(base_href, quote=True)}">
   <title>{APP_NAME} Help</title>
   <style>
     body {{ font-family: Segoe UI, Arial, sans-serif; max-width: 980px; margin: 24px auto; padding: 0 16px; line-height: 1.55; background:#f8fafc; color:#0f172a; }}
@@ -1699,9 +1726,8 @@ class SBE83GuiApp:
   {body_html}
 </body>
 </html>"""
-            with tempfile.NamedTemporaryFile("w", delete=False, suffix="_engineers_field_kit_help.html", encoding="utf-8") as f:
+            with open(temp_path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(page)
-                temp_path = Path(f.name)
             webbrowser.open(temp_path.as_uri())
         except Exception as exc:
             messagebox.showerror("Help Error", f"Could not open help page:\n{exc}")
@@ -4284,5 +4310,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

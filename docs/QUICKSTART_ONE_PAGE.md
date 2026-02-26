@@ -6,10 +6,10 @@ Use this as a fast checklist for new users and time-critical bench runs.
 
 | Need | Go here |
 |---|---|
-| shortest path to first run | [Fast Path](#fast-path) |
-| full setup checklist | [Full One-Page Checklist](#full-one-page-checklist) |
-| pass/fail meaning | [Pass/Warn/Fail Rules](#passwarnfail-rules) |
-| immediate unblock steps | [If Blocked](#if-blocked) |
+| shortest path to first run | [Fast Path](./QUICKSTART_ONE_PAGE.md#fast-path) |
+| full setup checklist | [Full One-Page Checklist](./QUICKSTART_ONE_PAGE.md#full-one-page-checklist) |
+| pass/fail meaning | [Pass/Warn/Fail Rules](./QUICKSTART_ONE_PAGE.md#passwarnfail-rules) |
+| immediate unblock steps | [If Blocked](./QUICKSTART_ONE_PAGE.md#if-blocked) |
 
 ## Fast Path
 
