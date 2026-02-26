@@ -1,34 +1,57 @@
 import csv
 import datetime as dt
+import html
 import json
 import os
+from pathlib import Path
 import queue
 import re
 import sys
+import tempfile
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
+import mistune
 import numpy as np
 import serial
 from serial.tools import list_ports
-from styles import (
-    DARK_ACCENT,
-    DARK_BG,
-    DARK_BORDER,
-    DARK_MUTED,
-    DARK_OK,
-    DARK_PANEL,
-    DARK_PANEL_2,
-    DARK_TEXT,
-    LIGHT_BG,
-    LIGHT_MUTED,
-    LIGHT_OK,
-    LIGHT_PANEL_2,
-    LIGHT_TEXT,
-    apply_theme,
-)
+try:
+    from .styles import (
+        DARK_ACCENT,
+        DARK_BG,
+        DARK_BORDER,
+        DARK_MUTED,
+        DARK_OK,
+        DARK_PANEL,
+        DARK_PANEL_2,
+        DARK_TEXT,
+        LIGHT_BG,
+        LIGHT_MUTED,
+        LIGHT_OK,
+        LIGHT_PANEL_2,
+        LIGHT_TEXT,
+        apply_theme,
+    )
+except ImportError:
+    from styles import (
+        DARK_ACCENT,
+        DARK_BG,
+        DARK_BORDER,
+        DARK_MUTED,
+        DARK_OK,
+        DARK_PANEL,
+        DARK_PANEL_2,
+        DARK_TEXT,
+        LIGHT_BG,
+        LIGHT_MUTED,
+        LIGHT_OK,
+        LIGHT_PANEL_2,
+        LIGHT_TEXT,
+        apply_theme,
+    )
 
 SENSOR_TEST_DIR = r"I:\common\products\SensorTests\SBE83"
 WARN_NS = 10.0
@@ -118,22 +141,55 @@ UNIT_SCALE_FACTORS = {
     "kilo": 0.001,
 }
 
-APP_NAME = "Engineer’s Field Kit – Multitool"
-APP_SUBTITLE = "Engineering Multitool"
-APP_TAGLINE = "Serial • Plot • Analyze • Debug"
+DEFAULT_SAMPLE_SETUP = {
+    "tsr_fields": list(TSR_FIELDS),
+    "default_field_descriptions": dict(DEFAULT_FIELD_DESCRIPTIONS),
+    "live_plot_fields": dict(LIVE_PLOT_FIELDS),
+    "session_plot_fields": dict(SESSION_PLOT_FIELDS),
+    "unit_scale_factors": dict(UNIT_SCALE_FACTORS),
+}
+
+APP_NAME = "Seabird Sensor Digital Workbench"
+APP_SUBTITLE = "Digital Sensor Workbench"
+APP_TAGLINE = "Serial | Plot | Analyze | Debug"
 APP_VERSION = "v1.1.0"
 APP_AUTHOR = "Justin Klumpp"
-APP_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "engineers_field_kit_multitool_config.json")
+APP_COMPANY = "Seabird Scientific"
+APP_CONTACT_EMAIL = "jklumpp@seabird.com"
+APP_ABOUT_SUMMARY = (
+    "Seabird Sensor Digital Workbench is a desktop tool for connecting to digital sensors, "
+    "running repeatable bench tests, and visualizing both live and session data. "
+    "It combines serial communications, parser setup, plotting, and run logging in one workflow "
+    "to speed engineering diagnostics while keeping outputs traceable."
+)
+
+
+def _resolve_app_config_file():
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        return os.path.join(exe_dir, "sbs_dsw_config.json")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "engineers_field_kit_multitool_config.json")
+
+
+APP_CONFIG_FILE = _resolve_app_config_file()
 
 
 class SBE83GuiApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title(APP_NAME)
-        self.root.geometry("1280x800")
         self.app_config = self._load_app_config()
+        self._set_initial_window_size()
+        self._apply_saved_window_state()
+        self.sample_setup_defaults = self._load_sample_setup_defaults(self.app_config.get("sample_setup_defaults"))
+        self.tsr_fields = list(self.sample_setup_defaults["tsr_fields"])
+        self.default_field_descriptions = dict(self.sample_setup_defaults["default_field_descriptions"])
+        self.default_live_plot_fields = dict(self.sample_setup_defaults["live_plot_fields"])
+        self.default_session_plot_fields = dict(self.sample_setup_defaults["session_plot_fields"])
+        self.unit_scale_factors = dict(self.sample_setup_defaults["unit_scale_factors"])
         self.dark_mode_var = tk.BooleanVar(value=bool(self.app_config.get("dark_mode", True)))
         self.port_station_collapsed_var = tk.BooleanVar(value=bool(self.app_config.get("port_station_collapsed", False)))
+        self.config_mode_var = tk.BooleanVar(value=bool(self.app_config.get("config_mode", False)))
         apply_theme(self.root, dark_mode=bool(self.dark_mode_var.get()))
 
         self.serial_pool = {}  # port -> serial.Serial
@@ -162,10 +218,12 @@ class SBE83GuiApp:
         self.delimiter_var = tk.StringVar(value=",")
         self.example_sample_var = tk.StringVar()
         self.measureand_rows = []
-        self.live_plot_fields = dict(LIVE_PLOT_FIELDS)
-        self.base_session_plot_fields = dict(SESSION_PLOT_FIELDS)
-        self.session_plot_fields = dict(SESSION_PLOT_FIELDS)
-        self.sample_field_defs = self._default_sample_field_defs()
+        self.live_plot_fields = dict(self.default_live_plot_fields)
+        self.base_session_plot_fields = dict(self.default_session_plot_fields)
+        self.session_plot_fields = dict(self.default_session_plot_fields)
+        self.sample_field_defs = self._load_persisted_sample_field_defs(self.app_config.get("sample_field_defs"))
+        if not self.sample_field_defs:
+            self.sample_field_defs = self._default_sample_field_defs()
         self.field_meta_by_key = {}
         self.derived_fields = []
         self.live_visible_ports = set()
@@ -199,6 +257,8 @@ class SBE83GuiApp:
         self.runs_left_var = tk.StringVar(value="Runs left: n/a")
         self.sample_format_expanded = False
         self._dock_console_callback = self.root.register(self._dock_console_tab)
+        self.about_window = None
+        self._layout_save_after_id = None
 
         self._build_ui()
         self._apply_results_root(SENSOR_TEST_DIR, log_change=False)
@@ -216,19 +276,392 @@ class SBE83GuiApp:
         except Exception:
             return {}
 
-    def _save_app_config(self):
-        data = {
-            "dark_mode": bool(self.dark_mode_var.get()),
-            "port_station_collapsed": bool(self.port_station_collapsed_var.get()),
+    def _load_sample_setup_defaults(self, payload):
+        defaults = dict(DEFAULT_SAMPLE_SETUP)
+        result = {
+            "tsr_fields": list(defaults["tsr_fields"]),
+            "default_field_descriptions": dict(defaults["default_field_descriptions"]),
+            "live_plot_fields": dict(defaults["live_plot_fields"]),
+            "session_plot_fields": dict(defaults["session_plot_fields"]),
+            "unit_scale_factors": dict(defaults["unit_scale_factors"]),
         }
+        if not isinstance(payload, dict):
+            return result
+
+        tsr_fields = payload.get("tsr_fields")
+        if isinstance(tsr_fields, list):
+            clean = [str(x).strip() for x in tsr_fields if str(x).strip()]
+            if clean:
+                result["tsr_fields"] = clean
+
+        field_desc = payload.get("default_field_descriptions")
+        if isinstance(field_desc, dict):
+            clean = {}
+            for k, v in field_desc.items():
+                key = str(k).strip()
+                desc = str(v).strip()
+                if key and desc:
+                    clean[key] = desc
+            if clean:
+                result["default_field_descriptions"] = clean
+
+        live_plot = payload.get("live_plot_fields")
+        if isinstance(live_plot, dict):
+            clean = {}
+            for label, key in live_plot.items():
+                label_text = str(label).strip()
+                key_text = str(key).strip()
+                if label_text and key_text:
+                    clean[label_text] = key_text
+            if clean:
+                result["live_plot_fields"] = clean
+
+        session_plot = payload.get("session_plot_fields")
+        if isinstance(session_plot, dict):
+            clean = {}
+            for label, key in session_plot.items():
+                label_text = str(label).strip()
+                key_text = str(key).strip()
+                if label_text and key_text:
+                    clean[label_text] = key_text
+            if clean:
+                result["session_plot_fields"] = clean
+
+        scale_factors = payload.get("unit_scale_factors")
+        if isinstance(scale_factors, dict):
+            clean = {}
+            for name, factor in scale_factors.items():
+                scale_name = str(name).strip()
+                try:
+                    scale_val = float(factor)
+                except Exception:
+                    continue
+                if scale_name:
+                    clean[scale_name] = scale_val
+            if clean:
+                result["unit_scale_factors"] = clean
+        return result
+
+    def _load_persisted_sample_field_defs(self, payload):
+        if not isinstance(payload, list) or not payload:
+            return []
+        defs = []
+        for i, item in enumerate(payload):
+            if not isinstance(item, dict):
+                continue
+            idx = item.get("index", i)
+            try:
+                idx = int(idx)
+            except Exception:
+                idx = i
+            key = self._sanitize_measureand_key(item.get("key", f"field_{i + 1}"), idx)
+            description = str(item.get("description", key.replace("_", " ").title())).strip() or key.replace("_", " ").title()
+            scale_name = str(item.get("scale", "raw")).strip() or "raw"
+            if scale_name not in self.unit_scale_factors:
+                scale_name = "raw"
+            defs.append(
+                {
+                    "index": idx,
+                    "key": key,
+                    "description": description,
+                    "unit": str(item.get("unit", "")).strip(),
+                    "scale": scale_name,
+                    "min_val": str(item.get("min_val", "")).strip(),
+                    "max_val": str(item.get("max_val", "")).strip(),
+                    "stuck_n": str(item.get("stuck_n", "")).strip(),
+                    "expr": str(item.get("expr", "")).strip(),
+                    "plot_live": bool(item.get("plot_live", False)),
+                    "plot_session": bool(item.get("plot_session", False)),
+                    "live_default": bool(item.get("live_default", i == 0)),
+                }
+            )
+        return sorted(defs, key=lambda d: d.get("index", 0))
+
+    def _snapshot_sample_setup_defaults(self):
+        return {
+            "tsr_fields": [d["key"] for d in self.sample_field_defs],
+            "default_field_descriptions": {d["key"]: d["description"] for d in self.sample_field_defs},
+            "live_plot_fields": {d["description"]: d["key"] for d in self.sample_field_defs if d.get("plot_live")},
+            "session_plot_fields": dict(self.base_session_plot_fields),
+            "unit_scale_factors": dict(self.unit_scale_factors),
+        }
+
+    def _persist_sample_setup_defaults(self):
+        self.app_config["sample_field_defs"] = list(self.sample_field_defs)
+        self.app_config["sample_setup_defaults"] = self._snapshot_sample_setup_defaults()
+        self._save_app_config()
+
+    def _save_app_config(self):
+        data = dict(self.app_config) if isinstance(self.app_config, dict) else {}
+        data["dark_mode"] = bool(self.dark_mode_var.get())
+        data["port_station_collapsed"] = bool(self.port_station_collapsed_var.get())
+        if hasattr(self, "config_mode_var"):
+            data["config_mode"] = bool(self.config_mode_var.get())
+        data["layout_state"] = self._capture_layout_state()
+        if "sample_setup_defaults" not in data:
+            data["sample_setup_defaults"] = self._snapshot_sample_setup_defaults()
+        if "sample_field_defs" not in data:
+            data["sample_field_defs"] = list(self.sample_field_defs)
         try:
             with open(APP_CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
+            self.app_config = data
         except Exception as exc:
             self.log(f"Config save failed: {exc}")
 
     def _console_font(self):
         return ("Consolas", 10)
+
+    def _set_initial_window_size(self):
+        try:
+            screen_w = int(self.root.winfo_screenwidth())
+            screen_h = int(self.root.winfo_screenheight())
+        except Exception:
+            self.root.geometry("960x600")
+            return
+        target_w = max(860, min(960, int(screen_w * 0.5)))
+        target_h = max(540, min(600, int(screen_h * 0.5)))
+        target_w = min(target_w, max(800, screen_w - 60))
+        target_h = min(target_h, max(520, screen_h - 80))
+        pos_x = max(0, (screen_w - target_w) // 2)
+        pos_y = max(0, (screen_h - target_h) // 3)
+        self.root.geometry(f"{target_w}x{target_h}+{pos_x}+{pos_y}")
+
+    def _apply_saved_window_state(self):
+        layout = self.app_config.get("layout_state", {})
+        if not isinstance(layout, dict):
+            return
+        geometry = layout.get("window_geometry")
+        if isinstance(geometry, str) and geometry.strip():
+            try:
+                self.root.geometry(geometry.strip())
+            except Exception:
+                pass
+        state = str(layout.get("window_state", "")).lower()
+        if state == "zoomed":
+            try:
+                self.root.state("zoomed")
+            except Exception:
+                try:
+                    self.root.attributes("-zoomed", True)
+                except Exception:
+                    pass
+
+    def _capture_layout_state(self):
+        out = {}
+        try:
+            state = str(self.root.state()).lower()
+        except Exception:
+            state = "normal"
+        if state == "iconic":
+            state = "normal"
+        out["window_state"] = state
+        try:
+            out["window_geometry"] = self.root.winfo_geometry()
+        except Exception:
+            pass
+        if hasattr(self, "main_split"):
+            try:
+                out["main_split_sash"] = int(self.main_split.sashpos(0))
+            except Exception:
+                pass
+        if hasattr(self, "plot_split"):
+            try:
+                out["plot_split_sash"] = int(self.plot_split.sashpos(0))
+            except Exception:
+                pass
+        out["sample_format_expanded"] = bool(getattr(self, "sample_format_expanded", False))
+        if hasattr(self, "main_notebook"):
+            try:
+                out["active_tab_text"] = str(self.main_notebook.tab(self.main_notebook.select(), "text"))
+            except Exception:
+                pass
+        return out
+
+    def _schedule_layout_save(self, delay_ms=700):
+        if not hasattr(self, "root"):
+            return
+        if self._layout_save_after_id is not None:
+            try:
+                self.root.after_cancel(self._layout_save_after_id)
+            except Exception:
+                pass
+        try:
+            self._layout_save_after_id = self.root.after(delay_ms, self._flush_layout_save)
+        except Exception:
+            self._layout_save_after_id = None
+
+    def _flush_layout_save(self):
+        self._layout_save_after_id = None
+        try:
+            self._save_app_config()
+        except Exception:
+            pass
+
+    def _set_split_defaults(self):
+        profile = self._layout_profile()
+        if hasattr(self, "main_split"):
+            self.root.update_idletasks()
+            try:
+                total_h = int(self.main_split.winfo_height())
+            except Exception:
+                total_h = 0
+            if total_h >= 220:
+                min_notebook_h = max(int(total_h / 3), 320 if profile == "wide" else 280)
+                default_top_h = max(220, int(total_h * (0.30 if profile == "wide" else 0.42)))
+                default_top_h = min(default_top_h, total_h - min_notebook_h)
+                try:
+                    self.main_split.sashpos(0, default_top_h)
+                except Exception:
+                    pass
+        self._enforce_main_notebook_min_height()
+        self._adjust_plot_split_height(force=True)
+
+    def _main_split_limits(self):
+        if not hasattr(self, "main_split"):
+            return None
+        try:
+            total_h = int(self.main_split.winfo_height())
+        except Exception:
+            return None
+        if total_h < 200:
+            return None
+        min_notebook_h = max(int(total_h / 3), 320 if self._layout_profile() == "wide" else 280)
+        min_top_h = 130
+        max_top_h = max(min_top_h, total_h - min_notebook_h)
+        return (min_top_h, max_top_h)
+
+    def _plot_split_limits(self):
+        if not hasattr(self, "plot_split"):
+            return None
+        try:
+            total_h = int(self.plot_split.winfo_height())
+        except Exception:
+            return None
+        if total_h < 220:
+            return None
+        min_top_h = 110
+        max_top_h = max(min_top_h, total_h - 170)
+        return (min_top_h, max_top_h)
+
+    def _apply_startup_layout(self):
+        self._set_split_defaults()
+        self._restore_layout_from_config()
+        self._update_config_mode_button()
+        if self.config_mode_var.get():
+            self._set_config_mode(True, persist=False)
+
+    def _restore_layout_from_config(self):
+        layout = self.app_config.get("layout_state", {})
+        if not isinstance(layout, dict):
+            return
+        expanded = layout.get("sample_format_expanded")
+        if isinstance(expanded, bool) and expanded != self.sample_format_expanded:
+            self.toggle_sample_format_panel(expanded=expanded)
+        self.root.update_idletasks()
+        main_sash = layout.get("main_split_sash")
+        if isinstance(main_sash, int) and hasattr(self, "main_split"):
+            try:
+                limits = self._main_split_limits()
+                if limits is not None:
+                    lo, hi = limits
+                    self.main_split.sashpos(0, max(lo, min(hi, main_sash)))
+            except Exception:
+                pass
+        plot_sash = layout.get("plot_split_sash")
+        if isinstance(plot_sash, int) and hasattr(self, "plot_split"):
+            try:
+                limits = self._plot_split_limits()
+                if limits is not None:
+                    lo, hi = limits
+                    self.plot_split.sashpos(0, max(lo, min(hi, plot_sash)))
+            except Exception:
+                pass
+        tab_text = str(layout.get("active_tab_text", "")).strip().lower()
+        if tab_text and hasattr(self, "main_notebook"):
+            for tab_id in self.main_notebook.tabs():
+                try:
+                    if str(self.main_notebook.tab(tab_id, "text")).strip().lower() == tab_text:
+                        self.main_notebook.select(tab_id)
+                        break
+                except Exception:
+                    continue
+
+    def _on_root_configure(self, _event=None):
+        self._enforce_main_notebook_min_height()
+        self._adjust_plot_split_height(force=False)
+        self._schedule_layout_save(delay_ms=800)
+
+    def _enforce_main_notebook_min_height(self):
+        if not hasattr(self, "main_split"):
+            return
+        try:
+            total_h = int(self.main_split.winfo_height())
+            pos = int(self.main_split.sashpos(0))
+        except Exception:
+            return
+        if total_h < 200:
+            return
+        min_top_h = 130
+        min_notebook_h = max(int(total_h / 3), 320 if self._layout_profile() == "wide" else 280)
+        max_top_h = max(min_top_h, total_h - min_notebook_h)
+        if pos < min_top_h:
+            try:
+                self.main_split.sashpos(0, min_top_h)
+            except Exception:
+                pass
+            return
+        if pos > max_top_h:
+            try:
+                self.main_split.sashpos(0, max_top_h)
+            except Exception:
+                pass
+
+    def _adjust_plot_split_height(self, force=False):
+        if not hasattr(self, "plot_split"):
+            return
+        try:
+            total_h = int(self.plot_split.winfo_height())
+            pos = int(self.plot_split.sashpos(0))
+        except Exception:
+            return
+        if total_h < 220:
+            return
+        profile = self._layout_profile()
+
+        if self.sample_format_expanded:
+            min_top_h = max(int(total_h / 3), 240 if profile == "wide" else 220)
+            target_top_h = max(min_top_h, int(total_h * (0.36 if profile == "wide" else 0.42)))
+            target_top_h = min(target_top_h, total_h - 140)
+            if force:
+                try:
+                    self.plot_split.sashpos(0, target_top_h)
+                except Exception:
+                    pass
+            elif pos < min_top_h:
+                try:
+                    self.plot_split.sashpos(0, min_top_h)
+                except Exception:
+                    pass
+        elif force:
+            target_top_h = min(max(130, int(total_h * (0.18 if profile == "wide" else 0.22))), total_h - 160)
+            try:
+                self.plot_split.sashpos(0, target_top_h)
+            except Exception:
+                pass
+
+    def _layout_profile(self):
+        try:
+            state = str(self.root.state()).lower()
+        except Exception:
+            state = ""
+        if state == "zoomed":
+            return "wide"
+        try:
+            w = int(self.root.winfo_width())
+        except Exception:
+            w = 0
+        return "wide" if w >= 1500 else "compact"
 
     def _theme_colors(self):
         if self.dark_mode_var.get():
@@ -236,9 +669,14 @@ class SBE83GuiApp:
                 "bg": DARK_BG,
                 "panel": DARK_PANEL,
                 "panel_2": DARK_PANEL_2,
+                "border": DARK_BORDER,
                 "fg": DARK_TEXT,
                 "muted": DARK_MUTED,
+                "accent": DARK_ACCENT,
                 "ok": DARK_OK,
+                "hero_bg": "#1f2a3a",
+                "hero_border": "#5d7ea0",
+                "hero_title": "#f8fbff",
                 "canvas": "#0b1220",
                 "entry": DARK_PANEL,
             }
@@ -246,11 +684,39 @@ class SBE83GuiApp:
             "bg": LIGHT_BG,
             "panel": "#ffffff",
             "panel_2": LIGHT_PANEL_2,
+            "border": "#9bb0c7",
             "fg": LIGHT_TEXT,
             "muted": LIGHT_MUTED,
+            "accent": "#0f62fe",
             "ok": LIGHT_OK,
-            "canvas": "#f8fafc",
+            "hero_bg": "#dce8f6",
+            "hero_border": "#7aa0c7",
+            "hero_title": "#12253a",
+            "canvas": "#f3f8ff",
             "entry": "#ffffff",
+        }
+
+    def _status_colors(self):
+        if self.dark_mode_var.get():
+            return {
+                "DISCONNECTED": ("#5f6b7a", "#ffffff"),
+                "CONNECTED": ("#0f62fe", "#ffffff"),
+                "RUNNING": ("#f59e0b", "#111827"),
+                "COMPLETE": ("#14b8a6", "#042f2e"),
+                "PASS": ("#22c55e", "#052e16"),
+                "WARN": ("#fb923c", "#111827"),
+                "FAIL": ("#ef4444", "#ffffff"),
+                "ERROR": ("#a855f7", "#ffffff"),
+            }
+        return {
+            "DISCONNECTED": ("#7c8796", "#ffffff"),
+            "CONNECTED": ("#1d4ed8", "#ffffff"),
+            "RUNNING": ("#f59e0b", "#111827"),
+            "COMPLETE": ("#0d9488", "#ffffff"),
+            "PASS": ("#16a34a", "#ffffff"),
+            "WARN": ("#ea580c", "#ffffff"),
+            "FAIL": ("#dc2626", "#ffffff"),
+            "ERROR": ("#7e22ce", "#ffffff"),
         }
 
     def _apply_theme_recursive(self, widget, colors):
@@ -279,6 +745,37 @@ class SBE83GuiApp:
                 info["text"].configure(bg=colors["entry"], fg=colors["fg"], insertbackground=colors["fg"])
             except Exception:
                 pass
+        if hasattr(self, "hero_frame"):
+            self.hero_frame.configure(bg=colors["hero_bg"], highlightbackground=colors["hero_border"])
+        if hasattr(self, "hero_title_label"):
+            self.hero_title_label.configure(bg=colors["hero_bg"], fg=colors["hero_title"])
+        if hasattr(self, "hero_right"):
+            self.hero_right.configure(bg=colors["hero_bg"])
+        if hasattr(self, "hero_right_top"):
+            self.hero_right_top.configure(bg=colors["hero_bg"])
+        for attr in (
+            "hero_help_link",
+            "hero_about_link",
+            "hero_results_link",
+            "hero_live_link",
+            "hero_config_link",
+            "hero_reset_link",
+        ):
+            if hasattr(self, attr):
+                getattr(self, attr).configure(bg=colors["hero_bg"], fg=colors["muted"])
+        if hasattr(self, "hero_version_label"):
+            self.hero_version_label.configure(bg=colors["hero_bg"], fg=colors["accent"])
+        if hasattr(self, "hero_tagline_label"):
+            self.hero_tagline_label.configure(bg=colors["hero_bg"], fg=colors["muted"])
+        if hasattr(self, "port_grid_empty_label"):
+            self.port_grid_empty_label.configure(bg=colors["bg"], fg=colors["muted"])
+        for slot in getattr(self, "port_slots", {}).values():
+            slot["card"].configure(bg=colors["panel"], highlightbackground=colors["border"])
+            slot["slot_label"].configure(bg=colors["panel"], fg=colors["fg"])
+            slot["port_label"].configure(bg=colors["panel"], fg=colors["fg"])
+            slot["serial_label"].configure(bg=colors["panel"], fg=colors["muted"])
+            state_bg, state_fg = self.status_color(slot["state_var"].get())
+            slot["state_label"].configure(bg=state_bg, fg=state_fg)
 
     def _apply_theme(self, persist=True):
         apply_theme(self.root, dark_mode=bool(self.dark_mode_var.get()))
@@ -301,17 +798,183 @@ class SBE83GuiApp:
     def _on_toggle_dark_mode(self):
         self._apply_theme(persist=True)
 
+    def _on_header_link_enter(self, widget):
+        try:
+            widget.configure(fg=self._theme_colors()["accent"])
+        except Exception:
+            pass
+
+    def _on_header_link_leave(self, widget):
+        try:
+            if hasattr(self, "hero_config_link") and widget is self.hero_config_link and bool(self.config_mode_var.get()):
+                widget.configure(fg=self._theme_colors()["accent"])
+                return
+            widget.configure(fg=self._theme_colors()["muted"])
+        except Exception:
+            pass
+
+    def _update_config_mode_button(self):
+        if not hasattr(self, "hero_config_link"):
+            return
+        enabled = bool(self.config_mode_var.get())
+        self.hero_config_link.configure(fg=self._theme_colors()["accent"] if enabled else self._theme_colors()["muted"])
+
+    def _set_config_mode(self, enabled, persist=True):
+        self.config_mode_var.set(bool(enabled))
+        self._update_config_mode_button()
+        if enabled:
+            try:
+                self.main_notebook.select(self.plot_tab)
+            except Exception:
+                pass
+            if not self.sample_format_expanded:
+                self.toggle_sample_format_panel(expanded=True)
+            if hasattr(self, "main_split"):
+                self.root.update_idletasks()
+                try:
+                    total_h = int(self.main_split.winfo_height())
+                except Exception:
+                    total_h = 0
+                if total_h >= 220:
+                    top_ratio = 0.48 if self._layout_profile() == "wide" else 0.56
+                    top_h = min(max(220, int(total_h * top_ratio)), total_h - 180)
+                    limits = self._main_split_limits()
+                    if limits is not None:
+                        lo, hi = limits
+                        top_h = max(lo, min(hi, top_h))
+                    try:
+                        self.main_split.sashpos(0, top_h)
+                    except Exception:
+                        pass
+            if hasattr(self, "plot_split"):
+                self.root.update_idletasks()
+                try:
+                    p_total = int(self.plot_split.winfo_height())
+                except Exception:
+                    p_total = 0
+                if p_total >= 240:
+                    setup_h = min(max(int(p_total * 0.45), 220), p_total - 170)
+                    limits = self._plot_split_limits()
+                    if limits is not None:
+                        lo, hi = limits
+                        setup_h = max(lo, min(hi, setup_h))
+                    try:
+                        self.plot_split.sashpos(0, setup_h)
+                    except Exception:
+                        pass
+        else:
+            self._focus_live_layout(update_mode=False)
+        if persist:
+            self._save_app_config()
+
+    def _toggle_config_mode(self):
+        self._set_config_mode(not bool(self.config_mode_var.get()), persist=True)
+
+    def _focus_results_layout(self):
+        if bool(self.config_mode_var.get()):
+            self.config_mode_var.set(False)
+            self._update_config_mode_button()
+        if hasattr(self, "main_notebook") and hasattr(self, "test_tab"):
+            try:
+                self.main_notebook.select(self.test_tab)
+            except Exception:
+                pass
+        if not hasattr(self, "main_split"):
+            return
+        self.root.update_idletasks()
+        try:
+            total_h = int(self.main_split.winfo_height())
+        except Exception:
+            return
+        if total_h < 220:
+            return
+        notebook_target_h = max(int(total_h * (0.78 if self._layout_profile() == "wide" else 0.72)), int(total_h / 3), 320)
+        notebook_target_h = min(notebook_target_h, total_h - 140)
+        top_h = total_h - notebook_target_h
+        limits = self._main_split_limits()
+        if limits is not None:
+            lo, hi = limits
+            top_h = max(lo, min(hi, top_h))
+        try:
+            self.main_split.sashpos(0, top_h)
+        except Exception:
+            pass
+        self._save_app_config()
+
+    def _focus_live_layout(self, update_mode=True):
+        if update_mode and bool(self.config_mode_var.get()):
+            self.config_mode_var.set(False)
+            self._update_config_mode_button()
+        if hasattr(self, "main_notebook") and hasattr(self, "plot_tab"):
+            try:
+                self.main_notebook.select(self.plot_tab)
+            except Exception:
+                pass
+        if self.sample_format_expanded:
+            self.toggle_sample_format_panel(expanded=False)
+        if hasattr(self, "main_split"):
+            self.root.update_idletasks()
+            try:
+                total_h = int(self.main_split.winfo_height())
+            except Exception:
+                total_h = 0
+            if total_h >= 220:
+                notebook_target_h = max(int(total_h * (0.82 if self._layout_profile() == "wide" else 0.76)), int(total_h / 3), 340)
+                notebook_target_h = min(notebook_target_h, total_h - 130)
+                top_h = total_h - notebook_target_h
+                limits = self._main_split_limits()
+                if limits is not None:
+                    lo, hi = limits
+                    top_h = max(lo, min(hi, top_h))
+                try:
+                    self.main_split.sashpos(0, top_h)
+                except Exception:
+                    pass
+        if hasattr(self, "plot_split"):
+            self.root.update_idletasks()
+            try:
+                p_total = int(self.plot_split.winfo_height())
+            except Exception:
+                p_total = 0
+            if p_total >= 240:
+                top_h = min(max(120, int(p_total * 0.16)), p_total - 170)
+                try:
+                    self.plot_split.sashpos(0, top_h)
+                except Exception:
+                    pass
+        self._save_app_config()
+
+    def _reset_layout(self):
+        if getattr(self, "console_detached", False):
+            try:
+                self._dock_console_tab()
+            except Exception:
+                pass
+        if bool(self.config_mode_var.get()):
+            self.config_mode_var.set(False)
+            self._update_config_mode_button()
+        try:
+            state = str(self.root.state()).lower()
+        except Exception:
+            state = ""
+        if state != "zoomed":
+            self._set_initial_window_size()
+        if getattr(self, "sample_format_expanded", False):
+            self.toggle_sample_format_panel(expanded=False)
+        self.root.after(40, self._set_split_defaults)
+        self.root.after(80, self._save_app_config)
+
     def _apply_port_station_visibility(self, persist=True):
         if not hasattr(self, "port_station_frame"):
             return
         if self.port_station_collapsed_var.get():
             self.port_station_frame.pack_forget()
             if hasattr(self, "port_station_toggle_btn"):
-                self.port_station_toggle_btn.configure(text="Show Port Station View")
+                self.port_station_toggle_btn.configure(text="Show Port Station")
         else:
             self.port_station_frame.pack(fill=tk.X, pady=2, before=self.setup_frame)
             if hasattr(self, "port_station_toggle_btn"):
-                self.port_station_toggle_btn.configure(text="Hide Port Station View")
+                self.port_station_toggle_btn.configure(text="Hide Port Station")
         if persist:
             self._save_app_config()
 
@@ -320,56 +983,171 @@ class SBE83GuiApp:
         self._apply_port_station_visibility(persist=True)
 
     def _build_ui(self):
-        self.root.minsize(860, 560)
-        hero = tk.Frame(self.root, bg=DARK_PANEL_2, highlightthickness=1, highlightbackground=DARK_BORDER)
-        hero.pack(fill=tk.X, padx=8, pady=(8, 0))
-        tk.Label(
-            hero,
+        self.root.minsize(860, 540)
+        self.hero_frame = tk.Frame(self.root, bg=DARK_PANEL_2, highlightthickness=1, highlightbackground=DARK_BORDER)
+        self.hero_frame.pack(fill=tk.X, padx=8, pady=(8, 0))
+        self.hero_title_label = tk.Label(
+            self.hero_frame,
             text=APP_NAME,
             bg=DARK_PANEL_2,
             fg=DARK_TEXT,
-            font=("Segoe UI Semibold", 13),
-            padx=10,
-            pady=6,
-        ).pack(side=tk.LEFT)
-        hero_right = tk.Frame(hero, bg=DARK_PANEL_2)
-        hero_right.pack(side=tk.RIGHT, padx=10)
-        tk.Label(hero_right, text=APP_VERSION, bg=DARK_PANEL_2, fg=DARK_ACCENT, font=("Segoe UI Semibold", 10)).pack(anchor="e")
-        tk.Label(hero_right, text=APP_TAGLINE, bg=DARK_PANEL_2, fg=DARK_MUTED, font=("Segoe UI", 9)).pack(anchor="e")
+            font=("Segoe UI Semibold", 15),
+            padx=12,
+            pady=8,
+        )
+        self.hero_title_label.pack(side=tk.LEFT)
+        self.hero_right = tk.Frame(self.hero_frame, bg=DARK_PANEL_2)
+        self.hero_right.pack(side=tk.RIGHT, padx=12)
+        self.hero_right_top = tk.Frame(self.hero_right, bg=DARK_PANEL_2)
+        self.hero_right_top.pack(anchor="e")
+        self.hero_help_link = tk.Label(
+            self.hero_right_top,
+            text="Help",
+            bg=DARK_PANEL_2,
+            fg=DARK_MUTED,
+            font=("Segoe UI Semibold", 11),
+            cursor="hand2",
+            padx=0,
+            pady=0,
+        )
+        self.hero_help_link.pack(side=tk.LEFT, padx=(0, 12))
+        self.hero_help_link.bind("<Button-1>", lambda _e: self.open_readme_help())
+        self.hero_help_link.bind("<Enter>", lambda _e, w=self.hero_help_link: self._on_header_link_enter(w))
+        self.hero_help_link.bind("<Leave>", lambda _e, w=self.hero_help_link: self._on_header_link_leave(w))
+        self.hero_about_link = tk.Label(
+            self.hero_right_top,
+            text="About",
+            bg=DARK_PANEL_2,
+            fg=DARK_MUTED,
+            font=("Segoe UI Semibold", 11),
+            cursor="hand2",
+            padx=0,
+            pady=0,
+        )
+        self.hero_about_link.pack(side=tk.LEFT, padx=(0, 12))
+        self.hero_about_link.bind("<Button-1>", lambda _e: self.open_about_dialog())
+        self.hero_about_link.bind("<Enter>", lambda _e, w=self.hero_about_link: self._on_header_link_enter(w))
+        self.hero_about_link.bind("<Leave>", lambda _e, w=self.hero_about_link: self._on_header_link_leave(w))
+        self.hero_results_link = tk.Label(
+            self.hero_right_top,
+            text="Results",
+            bg=DARK_PANEL_2,
+            fg=DARK_MUTED,
+            font=("Segoe UI", 10),
+            cursor="hand2",
+            padx=0,
+            pady=0,
+        )
+        self.hero_results_link.pack(side=tk.LEFT, padx=(0, 10))
+        self.hero_results_link.bind("<Button-1>", lambda _e: self._focus_results_layout())
+        self.hero_results_link.bind("<Enter>", lambda _e, w=self.hero_results_link: self._on_header_link_enter(w))
+        self.hero_results_link.bind("<Leave>", lambda _e, w=self.hero_results_link: self._on_header_link_leave(w))
+        self.hero_live_link = tk.Label(
+            self.hero_right_top,
+            text="Live",
+            bg=DARK_PANEL_2,
+            fg=DARK_MUTED,
+            font=("Segoe UI", 10),
+            cursor="hand2",
+            padx=0,
+            pady=0,
+        )
+        self.hero_live_link.pack(side=tk.LEFT, padx=(0, 10))
+        self.hero_live_link.bind("<Button-1>", lambda _e: self._focus_live_layout())
+        self.hero_live_link.bind("<Enter>", lambda _e, w=self.hero_live_link: self._on_header_link_enter(w))
+        self.hero_live_link.bind("<Leave>", lambda _e, w=self.hero_live_link: self._on_header_link_leave(w))
+        self.hero_config_link = tk.Label(
+            self.hero_right_top,
+            text="Config",
+            bg=DARK_PANEL_2,
+            fg=DARK_MUTED,
+            font=("Segoe UI", 10),
+            cursor="hand2",
+            padx=0,
+            pady=0,
+        )
+        self.hero_config_link.pack(side=tk.LEFT, padx=(0, 10))
+        self.hero_config_link.bind("<Button-1>", lambda _e: self._toggle_config_mode())
+        self.hero_config_link.bind("<Enter>", lambda _e, w=self.hero_config_link: self._on_header_link_enter(w))
+        self.hero_config_link.bind("<Leave>", lambda _e, w=self.hero_config_link: self._on_header_link_leave(w))
+        self.hero_reset_link = tk.Label(
+            self.hero_right_top,
+            text="Reset",
+            bg=DARK_PANEL_2,
+            fg=DARK_MUTED,
+            font=("Segoe UI", 10),
+            cursor="hand2",
+            padx=0,
+            pady=0,
+        )
+        self.hero_reset_link.pack(side=tk.LEFT, padx=(0, 12))
+        self.hero_reset_link.bind("<Button-1>", lambda _e: self._reset_layout())
+        self.hero_reset_link.bind("<Enter>", lambda _e, w=self.hero_reset_link: self._on_header_link_enter(w))
+        self.hero_reset_link.bind("<Leave>", lambda _e, w=self.hero_reset_link: self._on_header_link_leave(w))
+        self.hero_version_label = tk.Label(
+            self.hero_right_top, text=APP_VERSION, bg=DARK_PANEL_2, fg=DARK_ACCENT, font=("Segoe UI Semibold", 11)
+        )
+        self.hero_version_label.pack(side=tk.LEFT)
+        self.hero_tagline_label = tk.Label(self.hero_right, text=APP_TAGLINE, bg=DARK_PANEL_2, fg=DARK_MUTED, font=("Segoe UI", 10))
+        self.hero_tagline_label.pack(anchor="e")
 
-        self.top_frame = ttk.Frame(self.root, padding=8)
-        self.top_frame.pack(fill=tk.X)
+        self.main_split = ttk.PanedWindow(self.root, orient=tk.VERTICAL)
+        self.main_split.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+
+        self.top_frame = ttk.Frame(self.main_split, padding=8)
 
         conn = ttk.LabelFrame(self.top_frame, text="Connection (up to 10 COM ports)", padding=8)
         conn.pack(fill=tk.X, pady=4)
+        conn.grid_columnconfigure(0, weight=1)
 
-        ttk.Label(conn, text="Selected COM Port").grid(row=0, column=0, sticky="w")
+        conn_inputs = ttk.Frame(conn)
+        conn_inputs.grid(row=0, column=0, sticky="ew")
+        conn_inputs.grid_columnconfigure(1, weight=1)
+        conn_inputs.grid_columnconfigure(3, weight=1)
+        conn_inputs.grid_columnconfigure(4, weight=0)
+        ttk.Label(conn_inputs, text="Selected COM Port").grid(row=0, column=0, sticky="e", padx=(0, 6), pady=(0, 6))
         self.com_var = tk.StringVar(value="COM5")
-        self.com_combo = ttk.Combobox(conn, textvariable=self.com_var, width=14, state="readonly")
-        self.com_combo.grid(row=0, column=1, padx=6, sticky="w")
-        ttk.Label(conn, text="Baud").grid(row=0, column=2, sticky="e")
-        self.baud_combo = ttk.Combobox(conn, textvariable=self.baudrate_var, width=10, state="readonly", values=BAUD_OPTIONS)
-        self.baud_combo.grid(row=0, column=3, padx=6, sticky="w")
+        self.com_combo = ttk.Combobox(conn_inputs, textvariable=self.com_var, width=14, state="readonly")
+        self.com_combo.grid(row=0, column=1, sticky="ew", pady=(0, 6))
+        ttk.Label(conn_inputs, text="Baud").grid(row=0, column=2, sticky="e", padx=(14, 6), pady=(0, 6))
+        self.baud_combo = ttk.Combobox(conn_inputs, textvariable=self.baudrate_var, width=10, state="readonly", values=BAUD_OPTIONS)
+        self.baud_combo.grid(row=0, column=3, sticky="ew", pady=(0, 6))
+        ttk.Button(conn_inputs, text="Refresh Ports", command=self.refresh_ports).grid(row=0, column=4, sticky="ew", padx=(14, 0), pady=(0, 6))
 
-        ttk.Button(conn, text="Refresh Ports", command=self.refresh_ports).grid(row=0, column=4, padx=4)
-        ttk.Button(conn, text="Connect Selected", command=self.connect_selected_port).grid(row=0, column=5, padx=4)
-        ttk.Button(conn, text="Reconnect @ Baud", command=self.reconnect_selected_port).grid(row=0, column=6, padx=4)
-        ttk.Button(conn, text="Disconnect Selected", command=self.disconnect_selected_port).grid(row=0, column=7, padx=4)
-        ttk.Button(conn, text="Connect All", command=self.connect_all_ports).grid(row=0, column=8, padx=4)
-        ttk.Button(conn, text="Disconnect All", command=self.disconnect_all_ports).grid(row=0, column=9, padx=4)
-        self.port_station_toggle_btn = ttk.Button(conn, text="Hide Port Station View", command=self._toggle_port_station_visibility)
-        self.port_station_toggle_btn.grid(row=0, column=10, padx=4)
-        conn.grid_columnconfigure(11, weight=1)
-        ttk.Button(conn, text="About", command=self.show_about_dialog).grid(row=0, column=12, padx=4, sticky="e")
-
-        self.conn_status = tk.StringVar(value="Connected ports: 0")
-        ttk.Label(conn, textvariable=self.conn_status, foreground=DARK_MUTED).grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
-
-        self.connected_ports_var = tk.StringVar(value="None")
-        ttk.Label(conn, text="Connected list:").grid(row=1, column=5, sticky="e", pady=(6, 0))
-        ttk.Label(conn, textvariable=self.connected_ports_var, foreground=DARK_OK).grid(
-            row=1, column=6, columnspan=4, sticky="w", pady=(6, 0)
+        conn_actions = ttk.Frame(conn)
+        conn_actions.grid(row=1, column=0, sticky="ew")
+        for col in range(6):
+            conn_actions.grid_columnconfigure(col, weight=1)
+        ttk.Button(conn_actions, text="Connect Selected", command=self.connect_selected_port).grid(
+            row=0, column=0, padx=2, sticky="ew"
         )
+        ttk.Button(conn_actions, text="Reconnect @ Baud", command=self.reconnect_selected_port).grid(
+            row=0, column=1, padx=2, sticky="ew"
+        )
+        ttk.Button(conn_actions, text="Disconnect Selected", command=self.disconnect_selected_port).grid(
+            row=0, column=2, padx=2, sticky="ew"
+        )
+        ttk.Button(conn_actions, text="Connect All", command=self.connect_all_ports).grid(
+            row=0, column=3, padx=2, sticky="ew"
+        )
+        ttk.Button(conn_actions, text="Disconnect All", command=self.disconnect_all_ports).grid(
+            row=0, column=4, padx=2, sticky="ew"
+        )
+        self.port_station_toggle_btn = ttk.Button(
+            conn_actions, text="Hide Port Station", command=self._toggle_port_station_visibility
+        )
+        self.port_station_toggle_btn.grid(row=0, column=5, padx=2, sticky="ew")
+
+        conn_status_row = ttk.Frame(conn)
+        conn_status_row.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        conn_status_row.grid_columnconfigure(1, weight=1)
+        self.conn_status = tk.StringVar(value="Connected ports: 0")
+        self.conn_status_label = ttk.Label(conn_status_row, textvariable=self.conn_status, style="Muted.TLabel")
+        self.conn_status_label.grid(row=0, column=0, sticky="w")
+        self.connected_ports_var = tk.StringVar(value="None")
+        ttk.Label(conn_status_row, text="Connected list:", style="Muted.TLabel").grid(row=0, column=1, sticky="e", padx=(12, 6))
+        self.connected_ports_label = ttk.Label(conn_status_row, textvariable=self.connected_ports_var, style="OK.TLabel")
+        self.connected_ports_label.grid(row=0, column=2, sticky="w")
 
         self.port_station_frame = ttk.LabelFrame(self.top_frame, text="Port Station View (10 slots)", padding=4)
         self.port_station_frame.pack(fill=tk.X, pady=2)
@@ -388,25 +1166,27 @@ class SBE83GuiApp:
         self.batch_run_count_var = tk.IntVar(value=1)
         self.batch_delay_s_var = tk.DoubleVar(value=5.0)
 
-        ttk.Label(self.setup_frame, text="Operator").grid(row=0, column=0, sticky="w")
-        ttk.Entry(self.setup_frame, textvariable=self.operator_var, width=20, state="readonly").grid(row=0, column=1, padx=5, sticky="w")
-        ttk.Label(self.setup_frame, text="Bath ID").grid(row=0, column=2, sticky="w")
-        ttk.Entry(self.setup_frame, textvariable=self.bath_id_var, width=18).grid(row=0, column=3, padx=5, sticky="w")
-        ttk.Label(self.setup_frame, text="Notes").grid(row=0, column=4, sticky="w")
-        ttk.Entry(self.setup_frame, textvariable=self.notes_var, width=28).grid(row=0, column=5, padx=5, sticky="w")
+        for col in (1, 3, 5):
+            self.setup_frame.grid_columnconfigure(col, weight=1)
+        ttk.Label(self.setup_frame, text="Operator").grid(row=0, column=0, sticky="e", padx=(0, 6), pady=(0, 6))
+        ttk.Entry(self.setup_frame, textvariable=self.operator_var, width=20, state="readonly").grid(row=0, column=1, padx=(0, 12), pady=(0, 6), sticky="ew")
+        ttk.Label(self.setup_frame, text="Bath ID").grid(row=0, column=2, sticky="e", padx=(0, 6), pady=(0, 6))
+        ttk.Entry(self.setup_frame, textvariable=self.bath_id_var, width=18).grid(row=0, column=3, padx=(0, 12), pady=(0, 6), sticky="ew")
+        ttk.Label(self.setup_frame, text="Notes").grid(row=0, column=4, sticky="e", padx=(0, 6), pady=(0, 6))
+        ttk.Entry(self.setup_frame, textvariable=self.notes_var, width=28).grid(row=0, column=5, pady=(0, 6), sticky="ew")
 
-        ttk.Label(self.setup_frame, text="Bath Temp (C)").grid(row=1, column=0, sticky="w")
-        ttk.Entry(self.setup_frame, textvariable=self.bath_temp_c_var, width=20).grid(row=1, column=1, padx=5, sticky="w")
-        ttk.Label(self.setup_frame, text="Salinity (PSU)").grid(row=1, column=2, sticky="w")
-        ttk.Entry(self.setup_frame, textvariable=self.salinity_psu_var, width=20, state="readonly").grid(row=1, column=3, padx=5, sticky="w")
-        ttk.Label(self.setup_frame, text="Samples").grid(row=1, column=4, sticky="w")
-        ttk.Spinbox(self.setup_frame, from_=20, to=500, textvariable=self.sample_count_var, width=8).grid(row=1, column=5, padx=5, sticky="w")
-        ttk.Label(self.setup_frame, text="Results Root").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(self.setup_frame, text="Bath Temp (C)").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=(0, 6))
+        ttk.Entry(self.setup_frame, textvariable=self.bath_temp_c_var, width=20).grid(row=1, column=1, padx=(0, 12), pady=(0, 6), sticky="ew")
+        ttk.Label(self.setup_frame, text="Salinity (PSU)").grid(row=1, column=2, sticky="e", padx=(0, 6), pady=(0, 6))
+        ttk.Entry(self.setup_frame, textvariable=self.salinity_psu_var, width=20, state="readonly").grid(row=1, column=3, padx=(0, 12), pady=(0, 6), sticky="ew")
+        ttk.Label(self.setup_frame, text="Samples").grid(row=1, column=4, sticky="e", padx=(0, 6), pady=(0, 6))
+        ttk.Spinbox(self.setup_frame, from_=20, to=500, textvariable=self.sample_count_var, width=8).grid(row=1, column=5, pady=(0, 6), sticky="ew")
+        ttk.Label(self.setup_frame, text="Results Root").grid(row=2, column=0, sticky="e", padx=(0, 6), pady=(2, 0))
         ttk.Entry(self.setup_frame, textvariable=self.results_root_var, width=78, state="readonly").grid(
-            row=2, column=1, columnspan=4, padx=5, sticky="we", pady=(6, 0)
+            row=2, column=1, columnspan=4, padx=(0, 12), sticky="ew", pady=(2, 0)
         )
         ttk.Button(self.setup_frame, text="Browse", command=self.browse_results_root).grid(
-            row=2, column=5, padx=5, sticky="e", pady=(6, 0)
+            row=2, column=5, sticky="ew", pady=(2, 0)
         )
         for var in (
             self.operator_var,
@@ -420,41 +1200,59 @@ class SBE83GuiApp:
 
         actions = ttk.LabelFrame(self.top_frame, text="Actions", padding=8)
         actions.pack(fill=tk.X, pady=4)
+        actions.grid_columnconfigure(0, weight=1)
+        action_buttons = ttk.Frame(actions)
+        action_buttons.grid(row=0, column=0, sticky="ew")
+        for col in range(10):
+            action_buttons.grid_columnconfigure(col, weight=1)
 
         self.run_btn = ttk.Button(
-            actions, text="Run Unit Test (all connected)", command=self.run_unit_test, state=tk.DISABLED, style="Primary.TButton"
+            action_buttons, text="Run Test", command=self.run_unit_test, state=tk.DISABLED, style="Primary.TButton"
         )
-        self.run_btn.grid(row=0, column=0, padx=4)
-        ttk.Button(actions, text="Save Session JSON", command=self.save_session_json).grid(row=0, column=1, padx=4)
-        ttk.Button(actions, text="Reset Session", command=self.reset_session).grid(row=0, column=2, padx=4)
-        ttk.Button(actions, text="Show Plot", command=self.show_plot_tab).grid(row=0, column=3, padx=4)
-        ttk.Button(actions, text="Show Console", command=self.show_console_tab).grid(row=0, column=4, padx=4)
-        self.detach_console_btn = ttk.Button(actions, text="Detach Console", command=self.detach_console_window)
-        self.detach_console_btn.grid(row=0, column=5, padx=4)
-        ttk.Button(actions, text="Plot Session", command=self.plot_current_session).grid(row=0, column=6, padx=4)
-        ttk.Button(actions, text="Load Session Plot", command=self.load_session_plot).grid(row=0, column=7, padx=4)
-        ttk.Button(actions, text="Reload Current Session JSON", command=self.reload_current_session_plot).grid(
-            row=0, column=8, padx=4
+        self.run_btn.grid(row=0, column=0, padx=2, sticky="ew")
+        ttk.Button(action_buttons, text="Save JSON", command=self.save_session_json).grid(
+            row=0, column=1, padx=2, sticky="ew"
         )
-        ttk.Button(actions, text="Toggle CSV Column", command=self.toggle_csv_column).grid(row=0, column=9, padx=4)
+        ttk.Button(action_buttons, text="Reset", command=self.reset_session).grid(
+            row=0, column=2, padx=2, sticky="ew"
+        )
+        ttk.Button(action_buttons, text="Live Plot", command=self.show_plot_tab).grid(
+            row=0, column=3, padx=2, sticky="ew"
+        )
+        ttk.Button(action_buttons, text="Console", command=self.show_console_tab).grid(
+            row=0, column=4, padx=2, sticky="ew"
+        )
+        self.detach_console_btn = ttk.Button(action_buttons, text="Detach", command=self.detach_console_window)
+        self.detach_console_btn.grid(row=0, column=5, padx=2, sticky="ew")
+        ttk.Button(action_buttons, text="Session Plot", command=self.plot_current_session).grid(
+            row=0, column=6, padx=2, sticky="ew"
+        )
+        ttk.Button(action_buttons, text="Load Session", command=self.load_session_plot).grid(
+            row=0, column=7, padx=2, sticky="ew"
+        )
+        ttk.Button(action_buttons, text="Reload JSON", command=self.reload_current_session_plot).grid(
+            row=0, column=8, padx=2, sticky="ew"
+        )
+        ttk.Button(action_buttons, text="CSV Column", command=self.toggle_csv_column).grid(
+            row=0, column=9, padx=2, sticky="ew"
+        )
+
+        action_status = ttk.Frame(actions)
+        action_status.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        action_status.grid_columnconfigure(8, weight=1)
+        ttk.Label(action_status, text="Runs").grid(row=0, column=0, sticky="e")
+        ttk.Spinbox(action_status, from_=1, to=50, textvariable=self.batch_run_count_var, width=6).grid(row=0, column=1, padx=(4, 16), sticky="w")
+        ttk.Label(action_status, text="Delay (s)").grid(row=0, column=2, sticky="e")
+        ttk.Spinbox(action_status, from_=0, to=300, increment=1, textvariable=self.batch_delay_s_var, width=6).grid(row=0, column=3, padx=(4, 16), sticky="w")
+        ttk.Checkbutton(action_status, text="Dark Mode", variable=self.dark_mode_var, command=self._on_toggle_dark_mode).grid(row=0, column=4, padx=(0, 16), sticky="w")
 
         self.limit_var = tk.StringVar(value=f"Units tested: 0 / {MAX_UNITS_PER_SESSION}")
-        ttk.Label(actions, textvariable=self.limit_var).grid(row=0, column=10, padx=12, sticky="w")
-        ttk.Label(actions, text="Runs").grid(row=1, column=0, sticky="e", padx=(4, 2), pady=(6, 0))
-        ttk.Spinbox(actions, from_=1, to=50, textvariable=self.batch_run_count_var, width=6).grid(
-            row=1, column=1, sticky="w", padx=(0, 8), pady=(6, 0)
-        )
-        ttk.Label(actions, text="Delay (s)").grid(row=1, column=2, sticky="e", padx=(4, 2), pady=(6, 0))
-        ttk.Spinbox(actions, from_=0, to=300, increment=1, textvariable=self.batch_delay_s_var, width=6).grid(
-            row=1, column=3, sticky="w", padx=(0, 8), pady=(6, 0)
-        )
-        ttk.Checkbutton(actions, text="Dark Mode", variable=self.dark_mode_var, command=self._on_toggle_dark_mode).grid(
-            row=1, column=4, sticky="w", padx=(8, 0), pady=(6, 0)
-        )
-        ttk.Label(actions, textvariable=self.runs_left_var).grid(row=1, column=5, columnspan=6, sticky="w", padx=(12, 0), pady=(6, 0))
+        ttk.Label(action_status, textvariable=self.limit_var, style="Accent.TLabel").grid(row=0, column=6, sticky="w")
+        ttk.Label(action_status, textvariable=self.runs_left_var, style="Muted.TLabel").grid(row=0, column=7, padx=(16, 0), sticky="w")
 
-        self.main_notebook = ttk.Notebook(self.root)
-        self.main_notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        self.main_notebook = ttk.Notebook(self.main_split)
+        self.main_split.add(self.top_frame, weight=0)
+        self.main_split.add(self.main_notebook, weight=1)
 
         self.test_tab = ttk.Frame(self.main_notebook, padding=8)
         self.plot_tab = ttk.Frame(self.main_notebook, padding=8)
@@ -524,12 +1322,15 @@ class SBE83GuiApp:
         mid.rowconfigure(0, weight=1)
         mid.columnconfigure(0, weight=1)
 
-        designer = ttk.LabelFrame(self.plot_tab, text="Generic Sample Format", padding=8)
-        designer.pack(fill=tk.X, pady=(0, 6))
+        self.plot_split = ttk.PanedWindow(self.plot_tab, orient=tk.VERTICAL)
+        self.plot_split.pack(fill=tk.BOTH, expand=True)
+
+        designer = ttk.LabelFrame(self.plot_split, text="Generic Sample Format", padding=8)
         self._build_sample_format_controls(designer)
 
-        live = ttk.LabelFrame(self.plot_tab, text="Current Run Live View", padding=8)
-        live.pack(fill=tk.BOTH, expand=True)
+        live = ttk.LabelFrame(self.plot_split, text="Current Run Live View", padding=8)
+        self.plot_split.add(designer, weight=2)
+        self.plot_split.add(live, weight=3)
 
         live_controls = ttk.Frame(live)
         live_controls.pack(fill=tk.X, pady=(0, 6))
@@ -622,6 +1423,11 @@ class SBE83GuiApp:
         self.debug_notebook.pack(fill=tk.BOTH, expand=True)
         self._rebuild_measureand_editor_rows(self.sample_field_defs)
         self._apply_measureand_config(show_message=False)
+        self.root.after(40, self._apply_startup_layout)
+        self.root.bind("<Configure>", self._on_root_configure, add="+")
+        self.main_split.bind("<ButtonRelease-1>", lambda _e: self._schedule_layout_save(delay_ms=250), add="+")
+        self.plot_split.bind("<ButtonRelease-1>", lambda _e: self._schedule_layout_save(delay_ms=250), add="+")
+        self.main_notebook.bind("<<NotebookTabChanged>>", lambda _e: self._schedule_layout_save(delay_ms=250), add="+")
 
     def show_plot_tab(self):
         self.main_notebook.select(self.plot_tab)
@@ -646,17 +1452,226 @@ class SBE83GuiApp:
         else:
             self.sample_format_body.pack_forget()
             self.sample_format_toggle_btn.configure(text="Show Setup")
+        self.root.after(20, lambda: self._adjust_plot_split_height(force=True))
+        self._schedule_layout_save(delay_ms=300)
 
-    def show_about_dialog(self):
-        message = (
-            f"{APP_NAME} {APP_VERSION}\n\n"
-            f"{APP_SUBTITLE}\n"
-            "Engineering workbench for serial sensor debug, validation, and recovery.\n"
-            "Designed for troubleshooting failed production/test/calibration units,\n"
-            "with live plotting, session analysis, and terminal-style serial tools.\n\n"
-            f"Author: {APP_AUTHOR}"
+    def _markdown_to_basic_html(self, markdown_text):
+        lines = markdown_text.splitlines()
+        out = []
+        in_code = False
+        in_list = False
+        link_re = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+
+        def convert_inline(text):
+            escaped = html.escape(text)
+            return link_re.sub(lambda m: f'<a href="{html.escape(m.group(2), quote=True)}">{html.escape(m.group(1))}</a>', escaped)
+
+        for raw in lines:
+            line = raw.rstrip("\n")
+            if line.strip().startswith("```"):
+                if in_code:
+                    out.append("</code></pre>")
+                    in_code = False
+                else:
+                    if in_list:
+                        out.append("</ul>")
+                        in_list = False
+                    out.append("<pre><code>")
+                    in_code = True
+                continue
+
+            if in_code:
+                out.append(html.escape(line))
+                continue
+
+            if not line.strip():
+                if in_list:
+                    out.append("</ul>")
+                    in_list = False
+                continue
+
+            heading = re.match(r"^(#{1,6})\s+(.*)$", line)
+            if heading:
+                if in_list:
+                    out.append("</ul>")
+                    in_list = False
+                level = len(heading.group(1))
+                out.append(f"<h{level}>{convert_inline(heading.group(2).strip())}</h{level}>")
+                continue
+
+            bullet = re.match(r"^\s*[-*]\s+(.*)$", line)
+            if bullet:
+                if not in_list:
+                    out.append("<ul>")
+                    in_list = True
+                out.append(f"<li>{convert_inline(bullet.group(1).strip())}</li>")
+                continue
+
+            if in_list:
+                out.append("</ul>")
+                in_list = False
+            out.append(f"<p>{convert_inline(line.strip())}</p>")
+
+        if in_list:
+            out.append("</ul>")
+        if in_code:
+            out.append("</code></pre>")
+        return "\n".join(out)
+
+    @staticmethod
+    def _render_markdown_html(markdown_text):
+        try:
+            md = mistune.create_markdown(plugins=["table"])
+            return md(markdown_text)
+        except Exception:
+            return None
+
+    def _open_contact_email(self):
+        try:
+            webbrowser.open(f"mailto:{APP_CONTACT_EMAIL}")
+        except Exception:
+            messagebox.showerror("Contact Error", f"Could not open email client for:\n{APP_CONTACT_EMAIL}")
+
+    def open_about_dialog(self):
+        if self.about_window is not None:
+            try:
+                if self.about_window.winfo_exists():
+                    self.about_window.deiconify()
+                    self.about_window.lift()
+                    self.about_window.focus_force()
+                    return
+            except Exception:
+                self.about_window = None
+
+        colors = self._theme_colors()
+        bg = colors["panel_2"]
+        fg = colors["fg"]
+        muted = colors["muted"]
+        accent = colors["accent"]
+        border = colors["border"]
+
+        win = tk.Toplevel(self.root)
+        self.about_window = win
+        win.title(f"About {APP_NAME}")
+        win.resizable(False, False)
+        win.transient(self.root)
+        win.configure(bg=bg, padx=16, pady=14)
+
+        # Standard About order: product, version, publisher, author, contact, summary.
+        tk.Label(win, text=APP_NAME, bg=bg, fg=fg, font=("Segoe UI Semibold", 14)).grid(
+            row=0, column=0, columnspan=2, sticky="w"
         )
-        messagebox.showinfo("About", message)
+        tk.Label(win, text=f"Version {APP_VERSION}", bg=bg, fg=accent, font=("Segoe UI Semibold", 11)).grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(2, 10)
+        )
+
+        sep = tk.Frame(win, height=1, bg=border)
+        sep.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+
+        tk.Label(win, text="Company", bg=bg, fg=muted, font=("Segoe UI Semibold", 10)).grid(row=3, column=0, sticky="e", padx=(0, 10))
+        tk.Label(win, text=APP_COMPANY, bg=bg, fg=fg, font=("Segoe UI", 10)).grid(row=3, column=1, sticky="w")
+        tk.Label(win, text="Author", bg=bg, fg=muted, font=("Segoe UI Semibold", 10)).grid(row=4, column=0, sticky="e", padx=(0, 10), pady=(4, 0))
+        tk.Label(win, text=APP_AUTHOR, bg=bg, fg=fg, font=("Segoe UI", 10)).grid(row=4, column=1, sticky="w", pady=(4, 0))
+        tk.Label(win, text="Contact", bg=bg, fg=muted, font=("Segoe UI Semibold", 10)).grid(row=5, column=0, sticky="e", padx=(0, 10), pady=(4, 0))
+        email_link = tk.Label(
+            win,
+            text=APP_CONTACT_EMAIL,
+            bg=bg,
+            fg=accent,
+            font=("Segoe UI", 10, "underline"),
+            cursor="hand2",
+        )
+        email_link.grid(row=5, column=1, sticky="w", pady=(4, 0))
+        email_link.bind("<Button-1>", lambda _e: self._open_contact_email())
+
+        tk.Label(win, text="Overview", bg=bg, fg=muted, font=("Segoe UI Semibold", 10)).grid(
+            row=6, column=0, sticky="ne", padx=(0, 10), pady=(10, 0)
+        )
+        tk.Label(
+            win,
+            text=APP_ABOUT_SUMMARY,
+            bg=bg,
+            fg=fg,
+            font=("Segoe UI", 10),
+            justify="left",
+            wraplength=520,
+        ).grid(row=6, column=1, sticky="w", pady=(10, 0))
+
+        close_btn = ttk.Button(win, text="Close", width=10, command=lambda: on_close())
+        close_btn.grid(row=7, column=1, sticky="e", pady=(14, 0))
+
+        win.grid_columnconfigure(1, weight=1)
+        win.update_idletasks()
+        px = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - win.winfo_width()) // 2)
+        py = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - win.winfo_height()) // 3)
+        win.geometry(f"+{px}+{py}")
+
+        def on_close():
+            self.about_window = None
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", on_close)
+        win.grab_set()
+        win.focus_force()
+
+    def open_readme_help(self):
+        candidates = []
+        if getattr(sys, "frozen", False):
+            exe_dir = Path(sys.executable).resolve().parent
+            candidates.append(exe_dir / "README.md")
+            candidates.append(exe_dir.parent / "README.md")
+        app_file = Path(__file__).resolve()
+        candidates.append(app_file.parents[2] / "README.md")
+        candidates.append(Path.cwd() / "README.md")
+
+        readme_path = None
+        for c in candidates:
+            if c.exists():
+                readme_path = c
+                break
+        if readme_path is None:
+            attempted = "\n".join(str(c) for c in candidates)
+            messagebox.showerror("Help Not Found", f"README.md not found. Checked:\n{attempted}")
+            return
+        try:
+            markdown_text = readme_path.read_text(encoding="utf-8", errors="replace")
+            body_html = self._render_markdown_html(markdown_text)
+            if not body_html:
+                body_html = self._markdown_to_basic_html(markdown_text)
+            page = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{APP_NAME} Help</title>
+  <style>
+    body {{ font-family: Segoe UI, Arial, sans-serif; max-width: 980px; margin: 24px auto; padding: 0 16px; line-height: 1.55; background:#f8fafc; color:#0f172a; }}
+    h1,h2,h3,h4,h5,h6 {{ color:#0f172a; margin-top: 1.2em; }}
+    pre {{ background:#0f172a; color:#e2e8f0; padding: 12px; overflow:auto; border-radius: 8px; }}
+    code {{ font-family: Consolas, monospace; }}
+    a {{ color:#0f62fe; text-decoration:none; }}
+    a:hover {{ text-decoration:underline; }}
+    ul {{ padding-left: 1.2rem; }}
+    ol {{ padding-left: 1.2rem; }}
+    p {{ margin: 0.55em 0; }}
+    table {{ border-collapse: collapse; width: 100%; margin: 12px 0; }}
+    th, td {{ border: 1px solid #cbd5e1; padding: 8px 10px; text-align: left; }}
+    th {{ background: #e2e8f0; }}
+    blockquote {{ margin: 12px 0; padding: 8px 12px; border-left: 3px solid #94a3b8; background: #f1f5f9; }}
+    .hdr {{ margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #cbd5e1; }}
+  </style>
+</head>
+<body>
+  <div class="hdr"><h1>{APP_NAME} Help</h1><div>Source: {readme_path}</div></div>
+  {body_html}
+</body>
+</html>"""
+            with tempfile.NamedTemporaryFile("w", delete=False, suffix="_engineers_field_kit_help.html", encoding="utf-8") as f:
+                f.write(page)
+                temp_path = Path(f.name)
+            webbrowser.open(temp_path.as_uri())
+        except Exception as exc:
+            messagebox.showerror("Help Error", f"Could not open help page:\n{exc}")
 
     def _current_results_root(self):
         if hasattr(self, "results_root_var"):
@@ -732,21 +1747,21 @@ class SBE83GuiApp:
 
     def _default_sample_field_defs(self):
         defs = []
-        for idx, key in enumerate(TSR_FIELDS):
+        for idx, key in enumerate(self.tsr_fields):
             unit = "V" if "voltage" in key else ("ns" if "phase" in key else "")
             scale = "milli" if unit == "V" else "raw"
             defs.append(
                 {
                     "index": idx,
                     "key": key,
-                    "description": DEFAULT_FIELD_DESCRIPTIONS.get(key, key.replace("_", " ").title()),
+                    "description": self.default_field_descriptions.get(key, key.replace("_", " ").title()),
                     "unit": unit,
                     "scale": scale,
                     "min_val": "",
                     "max_val": "",
                     "stuck_n": "",
                     "expr": "",
-                    "plot_live": key in LIVE_PLOT_FIELDS.values(),
+                    "plot_live": key in self.default_live_plot_fields.values(),
                     "plot_session": key in {"red_phase", "blue_phase", "red_voltage", "blue_voltage"},
                     "live_default": key == "red_phase",
                 }
@@ -769,6 +1784,7 @@ class SBE83GuiApp:
         ttk.Entry(top, textvariable=self.example_sample_var, width=72).pack(side=tk.LEFT, padx=(6, 8), fill=tk.X, expand=True)
         ttk.Label(top, text="Delimiter").pack(side=tk.LEFT, padx=(0, 4))
         ttk.Entry(top, textvariable=self.delimiter_var, width=3).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(top, text="Quick Setup + Plot", command=self.quick_setup_from_example).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(top, text="Load From Example", command=self.load_measureands_from_example).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(top, text="Apply Measureands", command=self.apply_measureands_from_editor).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(top, text="Save Profile", command=self.save_parser_profile).pack(side=tk.LEFT, padx=(0, 6))
@@ -788,7 +1804,7 @@ class SBE83GuiApp:
 
         ttk.Label(
             self.sample_format_body,
-            text="Paste one sensor output line, then edit names/descriptions and pick live/session fields.",
+            text="Paste one sensor output line, then use Quick Setup + Plot or edit names/descriptions and pick live/session fields.",
             foreground=DARK_MUTED,
         ).pack(anchor="w", pady=(0, 6))
 
@@ -870,7 +1886,7 @@ class SBE83GuiApp:
             ttk.Entry(self.measureand_editor, textvariable=desc_var).grid(row=row_idx, column=2, sticky="ew", padx=(0, 8))
             ttk.Entry(self.measureand_editor, textvariable=unit_var, width=8).grid(row=row_idx, column=3, sticky="w", padx=(0, 8))
             ttk.Combobox(
-                self.measureand_editor, textvariable=scale_var, width=7, state="readonly", values=list(UNIT_SCALE_FACTORS.keys())
+                self.measureand_editor, textvariable=scale_var, width=7, state="readonly", values=list(self.unit_scale_factors.keys())
             ).grid(
                 row=row_idx, column=4, sticky="w", padx=(0, 8)
             )
@@ -924,15 +1940,58 @@ class SBE83GuiApp:
             )
         return defs
 
-    def load_measureands_from_example(self):
+    def _example_tokens(self):
         raw = self.example_sample_var.get().strip()
         delim = self.delimiter_var.get() or ","
         if not raw:
             messagebox.showwarning("No Example", "Paste one serial output line first.")
-            return
+            return None
         tokens = [t.strip() for t in raw.split(delim)]
         if len(tokens) < 2:
-            messagebox.showerror("Invalid Example", "Example line did not split into comma-separated fields.")
+            messagebox.showerror("Invalid Example", "Example line did not split into at least two fields.")
+            return None
+        return tokens
+
+    def quick_setup_from_example(self):
+        tokens = self._example_tokens()
+        if not tokens:
+            return
+        defs = []
+        session_count = min(6, len(tokens))
+        for i, _token in enumerate(tokens):
+            key = f"column_{i + 1}"
+            desc = f"Column {i + 1}"
+            defs.append(
+                {
+                    "index": i,
+                    "key": key,
+                    "description": desc,
+                    "unit": "",
+                    "scale": "raw",
+                    "min_val": "",
+                    "max_val": "",
+                    "stuck_n": "",
+                    "expr": "",
+                    "plot_live": True,
+                    "plot_session": i < session_count,
+                    "live_default": i == 0,
+                }
+            )
+        self.sample_field_defs = defs
+        self._rebuild_measureand_editor_rows(defs)
+        self._apply_measureand_config(show_message=False)
+        self._persist_sample_setup_defaults()
+        self.show_plot_tab()
+        self.log(f"Quick sample setup applied from example line: {len(tokens)} fields.")
+        messagebox.showinfo(
+            "Quick Setup Applied",
+            f"Configured {len(tokens)} columns for live plotting.\n"
+            "Use Apply Measureands after any manual edits to fine-tune fields.",
+        )
+
+    def load_measureands_from_example(self):
+        tokens = self._example_tokens()
+        if not tokens:
             return
 
         prev = {d.get("index"): d for d in self.sample_field_defs}
@@ -963,11 +2022,13 @@ class SBE83GuiApp:
         defs = self._current_measureand_defs_from_editor()
         self.sample_field_defs = defs
         self._apply_measureand_config(show_message=True)
+        self._persist_sample_setup_defaults()
 
     def reset_measureands_default(self):
         self.sample_field_defs = self._default_sample_field_defs()
         self._rebuild_measureand_editor_rows(self.sample_field_defs)
         self._apply_measureand_config(show_message=True)
+        self._persist_sample_setup_defaults()
 
     def _apply_measureand_config(self, show_message=False):
         self.sample_field_defs = sorted(self.sample_field_defs, key=lambda d: d.get("index", 0))
@@ -986,7 +2047,7 @@ class SBE83GuiApp:
             self.field_meta_by_key[key] = {
                 "description": desc,
                 "unit": d.get("unit", ""),
-                "scale": d.get("scale", "raw") if d.get("scale", "raw") in UNIT_SCALE_FACTORS else "raw",
+                "scale": d.get("scale", "raw") if d.get("scale", "raw") in self.unit_scale_factors else "raw",
                 "min_val": min_val,
                 "max_val": max_val,
                 "stuck_n": stuck_n,
@@ -1066,7 +2127,7 @@ class SBE83GuiApp:
 
     def _field_scale_factor(self, key):
         meta = self.field_meta_by_key.get(key, {})
-        return UNIT_SCALE_FACTORS.get(meta.get("scale", "raw"), 1.0)
+        return self.unit_scale_factors.get(meta.get("scale", "raw"), 1.0)
 
     def _field_label_with_unit(self, key, default_label):
         meta = self.field_meta_by_key.get(key, {})
@@ -1135,6 +2196,7 @@ class SBE83GuiApp:
         self.sample_field_defs = fields
         self._rebuild_measureand_editor_rows(fields)
         self._apply_measureand_config(show_message=True)
+        self._persist_sample_setup_defaults()
         self.log(f"Loaded parser profile: {path}")
 
     def plot_current_session(self):
@@ -1655,7 +2717,7 @@ class SBE83GuiApp:
             text="No connected ports",
             bg=DARK_BG,
             fg=DARK_MUTED,
-            font=("Segoe UI", 9),
+            font=("Segoe UI", 10),
         )
         for idx in range(MAX_PORTS):
             r = idx // 5
@@ -1677,10 +2739,15 @@ class SBE83GuiApp:
             serial_var = tk.StringVar(value="SN: -")
             state_var = tk.StringVar(value="DISCONNECTED")
 
-            tk.Label(card, textvariable=slot_var, font=("Segoe UI", 8, "bold"), bg=DARK_PANEL, fg=DARK_TEXT).pack(anchor="w")
-            tk.Label(card, textvariable=port_var, fg=DARK_TEXT, bg=DARK_PANEL).pack(anchor="w")
-            tk.Label(card, textvariable=serial_var, fg=DARK_MUTED, bg=DARK_PANEL).pack(anchor="w")
-            state_label = tk.Label(card, textvariable=state_var, fg="white", bg="#6b7280", width=11, relief=tk.FLAT, padx=3, pady=1)
+            slot_label = tk.Label(card, textvariable=slot_var, font=("Segoe UI Semibold", 10), bg=DARK_PANEL, fg=DARK_TEXT)
+            slot_label.pack(anchor="w")
+            port_label = tk.Label(card, textvariable=port_var, fg=DARK_TEXT, bg=DARK_PANEL, font=("Segoe UI", 10))
+            port_label.pack(anchor="w")
+            serial_label = tk.Label(card, textvariable=serial_var, fg=DARK_MUTED, bg=DARK_PANEL, font=("Segoe UI", 9))
+            serial_label.pack(anchor="w")
+            state_label = tk.Label(
+                card, textvariable=state_var, fg="white", bg="#6b7280", width=11, relief=tk.FLAT, padx=4, pady=2, font=("Segoe UI Semibold", 9)
+            )
             state_label.pack(anchor="w", pady=(2, 0))
 
             self.port_slots[idx] = {
@@ -1689,6 +2756,9 @@ class SBE83GuiApp:
                 "port_var": port_var,
                 "serial_var": serial_var,
                 "state_var": state_var,
+                "slot_label": slot_label,
+                "port_label": port_label,
+                "serial_label": serial_label,
                 "state_label": state_label,
             }
 
@@ -1758,19 +2828,8 @@ class SBE83GuiApp:
         parts = [f"{port}:{max(0, int(v))}" for port, v in sorted(self.batch_runs_remaining_by_port.items())]
         self.runs_left_var.set(f"Runs left: {total_left} total ({' | '.join(parts)})")
 
-    @staticmethod
-    def status_color(status):
-        colors = {
-            "DISCONNECTED": "#6b7280",
-            "CONNECTED": "#2563eb",
-            "RUNNING": "#f59e0b",
-            "COMPLETE": "#0ea5a3",
-            "PASS": "#16a34a",
-            "WARN": "#d97706",
-            "FAIL": "#dc2626",
-            "ERROR": "#7c3aed",
-        }
-        return colors.get(status, "#6b7280")
+    def status_color(self, status):
+        return self._status_colors().get(status, self._status_colors()["DISCONNECTED"])
 
     def find_slot_by_port(self, port):
         for idx in range(MAX_PORTS):
@@ -1787,7 +2846,8 @@ class SBE83GuiApp:
             return
         slot = self.port_slots[idx]
         slot["state_var"].set(status)
-        slot["state_label"].configure(bg=self.status_color(status))
+        state_bg, state_fg = self.status_color(status)
+        slot["state_label"].configure(bg=state_bg, fg=state_fg)
         if serial:
             slot["serial_var"].set(f"SN: {serial}")
         elif status == "DISCONNECTED":
@@ -2116,7 +3176,8 @@ class SBE83GuiApp:
                     slot["state_var"].set("CONNECTED")
                 if slot["serial_var"].get() == "SN: -":
                     slot["serial_var"].set("SN: (pending)")
-                slot["state_label"].configure(bg=self.status_color(slot["state_var"].get()))
+                state_bg, state_fg = self.status_color(slot["state_var"].get())
+                slot["state_label"].configure(bg=state_bg, fg=state_fg)
                 r = idx // cols
                 c = idx % cols
                 card.grid(row=r, column=c, padx=3, pady=2, sticky="nsew")
@@ -2124,7 +3185,8 @@ class SBE83GuiApp:
                 slot["port_var"].set("(empty)")
                 slot["serial_var"].set("SN: -")
                 slot["state_var"].set("DISCONNECTED")
-                slot["state_label"].configure(bg=self.status_color("DISCONNECTED"))
+                state_bg, state_fg = self.status_color("DISCONNECTED")
+                slot["state_label"].configure(bg=state_bg, fg=state_fg)
                 card.grid_remove()
 
     def connect_selected_port(self):
@@ -3126,6 +4188,12 @@ class SBE83GuiApp:
 
     def shutdown(self):
         self.shutdown_event.set()
+        if self._layout_save_after_id is not None:
+            try:
+                self.root.after_cancel(self._layout_save_after_id)
+            except Exception:
+                pass
+            self._layout_save_after_id = None
 
         for ev in self.stream_stop_events.values():
             ev.set()
@@ -3153,6 +4221,10 @@ class SBE83GuiApp:
             self.active_run_ports.clear()
             self.run_threads = {}
         self.run_in_progress = False
+        try:
+            self._save_app_config()
+        except Exception:
+            pass
 
 
 def main():

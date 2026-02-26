@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['src\\engineers_field_kit_multitool\\app.py'],
+    ['sbs_dsw.py'],
     pathex=[],
     binaries=[],
     datas=[],
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='app',
+    name='sbs_dsw',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

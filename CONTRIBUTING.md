@@ -1,10 +1,10 @@
-# Contributing to Engineer’s Field Kit – Multitool
+﻿# Contributing to Seabird-Scientific Digital Sensor Workbench
 
 Thanks for wanting to contribute. This project is meant to stay **practical**, **engineer-friendly**, and **easy to maintain**.
 
 ## Ground rules
 - Keep features focused on real engineering workflows.
-- Prefer simple, readable code over “clever” code.
+- Prefer simple, readable code over â€œcleverâ€ code.
 - Avoid heavy dependencies unless the value is very clear.
 - Preserve the dark UI look/feel and consistency.
 
@@ -17,7 +17,7 @@ Thanks for wanting to contribute. This project is meant to stay **practical**, *
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-python -m engineers_field_kit_multitool.app
+python sbs_dsw.py
 ```
 
 ## Branching
@@ -45,3 +45,6 @@ pytest -q
 - Keep PRs small and scoped.
 - Include screenshots for UI changes.
 - Include example data (redacted) when useful.
+
+
+

@@ -1,9 +1,9 @@
-# Architecture
+﻿# Architecture
 
-Engineer’s Field Kit – Multitool is structured as a small Python package with a GUI entrypoint.
+Seabird-Scientific Digital Sensor Workbench is structured as a small Python package with a GUI entrypoint.
 
 ## Goals
-- Fast iteration on “bench utilities”
+- Fast iteration on â€œbench utilitiesâ€
 - Minimal, maintainable dependencies
 - Clear separation between UI and analysis logic
 
@@ -18,3 +18,5 @@ Engineer’s Field Kit – Multitool is structured as a small Python package wit
 - Keep parsing deterministic and testable.
 - Prefer pure functions for analysis logic.
 - Push UI-specific code to the UI layer.
+
+

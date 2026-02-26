@@ -4,9 +4,9 @@
 #
 
 [project]
-name = "engineer-field-kit"
+name = "sbs-dsw"
 version = "1.0.0-alpha.0"
-description = "Engineer's Field Kit"
+description = "Seabird-Scientific Digital Sensor Workbench"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {file = "LICENSE.txt"}

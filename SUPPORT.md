@@ -1,6 +1,6 @@
-# Support
+﻿# Support
 
-If you're using Engineer’s Field Kit – Multitool and hit a problem:
+If you're using Seabird-Scientific Digital Sensor Workbench and hit a problem:
 
 1. Check the README and docs in `docs/`
 2. Search existing GitHub Issues
@@ -12,3 +12,5 @@ If you're using Engineer’s Field Kit – Multitool and hit a problem:
    - sample data (redacted if needed)
 
 For internal Sea-Bird users: include instrument model, firmware, and test context.
+
+

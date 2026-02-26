@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['Engineers_Field_Kit_Multitool.py'],
+    ['sbs_dsw.py'],
     pathex=[],
     binaries=[],
     datas=[],
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="Engineer’s Field Kit – Multitool",
+    name="sbs_dsw",
     icon='assets/icons/seabird_tools_workbench.ico',
     debug=False,
     bootloader_ignore_signals=False,

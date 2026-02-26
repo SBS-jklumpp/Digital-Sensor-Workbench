@@ -2,10 +2,10 @@
 
 
 a = Analysis(
-    ['src\\engineers_field_kit_multitool\\app.py'],
+    ['sbs_dsw.py'],
     pathex=['src\\engineers_field_kit_multitool'],
     binaries=[],
-    datas=[],
+    datas=[('README.md', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -21,7 +21,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='EngineersFieldKit',
+    name='sbs_dsw',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -41,5 +41,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='EngineersFieldKit',
+    name='sbs_dsw',
 )
