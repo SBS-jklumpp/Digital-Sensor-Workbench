@@ -7,6 +7,7 @@ Use this as a fast checklist for new users and time-critical bench runs.
 | Need | Go here |
 |---|---|
 | shortest path to first run | [Fast Path](./QUICKSTART_ONE_PAGE.md#fast-path) |
+| update app from network feed | [Update App (Optional)](./QUICKSTART_ONE_PAGE.md#update-app-optional) |
 | full setup checklist | [Full One-Page Checklist](./QUICKSTART_ONE_PAGE.md#full-one-page-checklist) |
 | pass/fail meaning | [Pass/Warn/Fail Rules](./QUICKSTART_ONE_PAGE.md#passwarnfail-rules) |
 | immediate unblock steps | [If Blocked](./QUICKSTART_ONE_PAGE.md#if-blocked) |
@@ -21,6 +22,14 @@ Use this as a fast checklist for new users and time-critical bench runs.
 6. Click `Run Test`.
 7. Review `Test Results`.
 8. Click `Save JSON`.
+
+## Update App (Optional)
+
+1. Open `sbs_dsw.exe`.
+2. In `Actions`, click `Update Feed URL` and paste your manifest URL.
+3. Click `Check Update`.
+4. Confirm install when prompted.
+5. App closes, replaces exe, and restarts automatically.
 
 ## Full One-Page Checklist
 

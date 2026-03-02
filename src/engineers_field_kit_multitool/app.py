@@ -1,19 +1,23 @@
 import csv
 import datetime as dt
+import hashlib
 import html
 import json
 import os
 from pathlib import Path
 import queue
 import re
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 import tkinter as tk
 import webbrowser
-from urllib.parse import urljoin
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin, urlparse
+from urllib.request import Request, urlopen
+from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 
 import mistune
 import numpy as np
@@ -154,7 +158,7 @@ DEFAULT_SAMPLE_SETUP = {
 APP_NAME = "Seabird Sensor Digital Workbench"
 APP_SUBTITLE = "Digital Sensor Workbench"
 APP_TAGLINE = "Serial | Plot | Analyze | Debug"
-APP_VERSION = "v1.2.0"
+APP_VERSION = "v1.3.0"
 APP_AUTHOR = "Justin Klumpp"
 APP_COMPANY = "Seabird Scientific"
 APP_CONTACT_EMAIL = "jklumpp@seabird.com"
@@ -164,6 +168,10 @@ APP_ABOUT_SUMMARY = (
     "It combines serial communications, parser setup, plotting, and run logging in one workflow "
     "to speed engineering diagnostics while keeping outputs traceable."
 )
+DEFAULT_UPDATE_MANIFEST_URL = ""
+UPDATE_MANIFEST_URL_ENV = "SBS_DSW_UPDATE_MANIFEST_URL"
+UPDATE_HTTP_TIMEOUT_S = 12.0
+UPDATE_DOWNLOAD_CHUNK_BYTES = 1024 * 256
 
 
 def _resolve_app_config_file():
@@ -274,6 +282,13 @@ class SBE83GuiApp:
         self._dock_console_callback = self.root.register(self._dock_console_tab)
         self.about_window = None
         self._layout_save_after_id = None
+        env_manifest = str(os.environ.get(UPDATE_MANIFEST_URL_ENV, "")).strip()
+        cfg_manifest = str(self.app_config.get("update_manifest_url", "")).strip()
+        self.update_manifest_url = env_manifest or cfg_manifest or DEFAULT_UPDATE_MANIFEST_URL
+        self.auto_check_updates_var = tk.BooleanVar(value=bool(self.app_config.get("auto_check_updates", True)))
+        self.update_status_var = tk.StringVar(value="")
+        self._update_check_running = False
+        self._update_download_running = False
 
         self._build_ui()
         self._apply_results_root(self.non_debug_results_root, log_change=False)
@@ -288,6 +303,8 @@ class SBE83GuiApp:
         self.root.after(60, self._process_ui_events)
         self.log(f"Session started: {self.session_id}")
         self.log(f"Session summary file: {self.session_csv}")
+        self._refresh_update_status_banner()
+        self.root.after(1400, self._startup_update_check)
 
     def _load_app_config(self):
         try:
@@ -420,6 +437,9 @@ class SBE83GuiApp:
             data["config_mode"] = bool(self.config_mode_var.get())
         if hasattr(self, "debug_mode_var"):
             data["debug_mode"] = bool(self.debug_mode_var.get())
+        data["update_manifest_url"] = str(getattr(self, "update_manifest_url", "")).strip()
+        if hasattr(self, "auto_check_updates_var"):
+            data["auto_check_updates"] = bool(self.auto_check_updates_var.get())
         data["non_debug_results_root"] = str(getattr(self, "non_debug_results_root", SENSOR_TEST_DIR)).strip() or SENSOR_TEST_DIR
         data["test_setup_collapsed"] = not bool(getattr(self, "test_setup_visible", True))
         data["layout_state"] = self._capture_layout_state()
@@ -787,6 +807,7 @@ class SBE83GuiApp:
         for attr in (
             "hero_help_link",
             "hero_about_link",
+            "hero_update_link",
             "hero_results_link",
             "hero_live_link",
             "hero_config_link",
@@ -1058,6 +1079,20 @@ class SBE83GuiApp:
         self.hero_about_link.bind("<Button-1>", lambda _e: self.open_about_dialog())
         self.hero_about_link.bind("<Enter>", lambda _e, w=self.hero_about_link: self._on_header_link_enter(w))
         self.hero_about_link.bind("<Leave>", lambda _e, w=self.hero_about_link: self._on_header_link_leave(w))
+        self.hero_update_link = tk.Label(
+            self.hero_right_top,
+            text="Update",
+            bg=DARK_PANEL_2,
+            fg=DARK_MUTED,
+            font=("Segoe UI", 10),
+            cursor="hand2",
+            padx=0,
+            pady=0,
+        )
+        self.hero_update_link.pack(side=tk.LEFT, padx=(0, 10))
+        self.hero_update_link.bind("<Button-1>", lambda _e: self.check_for_updates(manual=True))
+        self.hero_update_link.bind("<Enter>", lambda _e, w=self.hero_update_link: self._on_header_link_enter(w))
+        self.hero_update_link.bind("<Leave>", lambda _e, w=self.hero_update_link: self._on_header_link_leave(w))
         self.hero_results_link = tk.Label(
             self.hero_right_top,
             text="Results",
@@ -1237,7 +1272,7 @@ class SBE83GuiApp:
         self.actions_frame.grid_columnconfigure(0, weight=1)
         action_buttons = ttk.Frame(self.actions_frame)
         action_buttons.grid(row=0, column=0, sticky="ew")
-        for col in range(10):
+        for col in range(11):
             action_buttons.grid_columnconfigure(col, weight=1)
 
         self.run_btn = ttk.Button(
@@ -1269,6 +1304,9 @@ class SBE83GuiApp:
         )
         ttk.Button(action_buttons, text="CSV Column", command=self.toggle_csv_column).grid(
             row=0, column=9, padx=2, sticky="ew"
+        )
+        ttk.Button(action_buttons, text="Check Update", command=lambda: self.check_for_updates(manual=True)).grid(
+            row=0, column=10, padx=2, sticky="ew"
         )
 
         action_status = ttk.Frame(self.actions_frame)
@@ -1302,6 +1340,18 @@ class SBE83GuiApp:
         self.setup_toggle_btn.grid(row=0, column=10, padx=(16, 0), sticky="e")
         self.mode_status_entry = ttk.Entry(action_status, textvariable=self.mode_status_var, state="readonly")
         self.mode_status_entry.grid(row=1, column=0, columnspan=11, pady=(8, 0), sticky="ew")
+        ttk.Checkbutton(
+            action_status,
+            text="Auto Check Updates",
+            variable=self.auto_check_updates_var,
+            command=self._on_auto_check_updates_toggle,
+        ).grid(row=2, column=0, columnspan=2, pady=(8, 0), sticky="w")
+        ttk.Button(action_status, text="Update Feed URL", command=self.prompt_update_manifest_url).grid(
+            row=2, column=10, padx=(12, 0), pady=(8, 0), sticky="e"
+        )
+        ttk.Label(action_status, textvariable=self.update_status_var, style="Muted.TLabel").grid(
+            row=2, column=2, columnspan=7, padx=(10, 0), pady=(8, 0), sticky="w"
+        )
 
         self.main_notebook = ttk.Notebook(self.main_split)
         self.main_split.add(self.top_frame, weight=0)
@@ -1758,6 +1808,349 @@ class SBE83GuiApp:
             webbrowser.open(temp_path.as_uri())
         except Exception as exc:
             messagebox.showerror("Help Error", f"Could not open help page:\n{exc}")
+
+    @staticmethod
+    def _normalize_version_tuple(version_text):
+        raw = str(version_text or "").strip()
+        if raw.lower().startswith("v"):
+            raw = raw[1:]
+        nums = re.findall(r"\d+", raw)
+        if not nums:
+            return (0,)
+        return tuple(int(n) for n in nums[:4])
+
+    @classmethod
+    def _is_newer_version(cls, candidate, current):
+        a = cls._normalize_version_tuple(candidate)
+        b = cls._normalize_version_tuple(current)
+        width = max(len(a), len(b))
+        return a + (0,) * (width - len(a)) > b + (0,) * (width - len(b))
+
+    @staticmethod
+    def _manifest_target_label(manifest_url):
+        parsed = urlparse(str(manifest_url or "").strip())
+        if not parsed.scheme:
+            text = str(manifest_url or "").strip()
+            return text if len(text) <= 44 else f"...{text[-44:]}"
+        host = parsed.netloc or parsed.path
+        path = parsed.path or ""
+        if len(path) > 24:
+            path = f"...{path[-24:]}"
+        return f"{host}{path}"
+
+    def _refresh_update_status_banner(self, text=None):
+        if not hasattr(self, "update_status_var"):
+            return
+        if text:
+            self.update_status_var.set(str(text))
+            return
+        if not getattr(sys, "frozen", False):
+            self.update_status_var.set("Updater active only in packaged sbs_dsw.exe")
+            return
+        manifest = str(getattr(self, "update_manifest_url", "")).strip()
+        if not manifest:
+            self.update_status_var.set("Update feed not configured")
+            return
+        mode = "Auto" if bool(self.auto_check_updates_var.get()) else "Manual"
+        self.update_status_var.set(f"{mode} feed: {self._manifest_target_label(manifest)}")
+
+    def _on_auto_check_updates_toggle(self):
+        self._save_app_config()
+        self._refresh_update_status_banner()
+
+    def prompt_update_manifest_url(self):
+        current = str(getattr(self, "update_manifest_url", "")).strip()
+        value = simpledialog.askstring(
+            "Update Feed URL",
+            "Enter update manifest URL (JSON). Leave blank to disable web updates.",
+            parent=self.root,
+            initialvalue=current,
+        )
+        if value is None:
+            return
+        self.update_manifest_url = str(value).strip()
+        self._save_app_config()
+        if self.update_manifest_url:
+            self.log(f"Update feed set: {self.update_manifest_url}")
+        else:
+            self.log("Update feed cleared. Web updates disabled.")
+        self._refresh_update_status_banner()
+
+    def _startup_update_check(self):
+        if self.shutdown_event.is_set():
+            return
+        if not getattr(sys, "frozen", False):
+            self._refresh_update_status_banner()
+            return
+        if not bool(self.auto_check_updates_var.get()):
+            self._refresh_update_status_banner()
+            return
+        if not str(self.update_manifest_url).strip():
+            self._refresh_update_status_banner()
+            return
+        self.check_for_updates(manual=False)
+
+    def check_for_updates(self, manual=False):
+        if self._update_check_running:
+            if manual:
+                messagebox.showinfo("Update Check", "An update check is already in progress.")
+            return
+        if not getattr(sys, "frozen", False):
+            self._refresh_update_status_banner("Updates can only be installed from packaged sbs_dsw.exe")
+            if manual:
+                messagebox.showinfo("Update Not Available", "Updates can only be installed from packaged sbs_dsw.exe.")
+            return
+
+        manifest_url = str(getattr(self, "update_manifest_url", "")).strip()
+        if not manifest_url:
+            self._refresh_update_status_banner("Update feed not configured")
+            if manual and messagebox.askyesno("Update Feed Missing", "No update feed URL is configured. Set it now?"):
+                self.prompt_update_manifest_url()
+            return
+
+        self._update_check_running = True
+        self._refresh_update_status_banner("Checking for updates...")
+        worker = threading.Thread(target=self._check_for_updates_worker, args=(manifest_url, bool(manual)), daemon=True)
+        worker.start()
+
+    def _check_for_updates_worker(self, manifest_url, manual):
+        try:
+            manifest = self._fetch_update_manifest(manifest_url)
+            latest_version = manifest.get("version", "")
+            if self._is_newer_version(latest_version, APP_VERSION):
+                self._ui_post("update_available", manifest, bool(manual))
+            else:
+                self._ui_post("update_up_to_date", manifest, bool(manual))
+        except Exception as exc:
+            self._ui_post("update_check_error", str(exc), bool(manual))
+        finally:
+            self._ui_post("update_check_finished")
+
+    def _fetch_update_manifest(self, manifest_url):
+        req = Request(manifest_url, headers={"User-Agent": f"sbs-dsw/{APP_VERSION}"})
+        try:
+            with urlopen(req, timeout=UPDATE_HTTP_TIMEOUT_S) as res:
+                body = res.read()
+        except HTTPError as exc:
+            raise RuntimeError(f"Manifest HTTP error {exc.code}: {exc.reason}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"Manifest request failed: {exc.reason}") from exc
+
+        try:
+            payload = json.loads(body.decode("utf-8", errors="replace"))
+        except Exception as exc:
+            raise RuntimeError(f"Manifest is not valid JSON: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("Manifest payload must be a JSON object.")
+
+        version = str(payload.get("version", "")).strip()
+        download_url = str(payload.get("url", "") or payload.get("exe_url", "")).strip()
+        sha256 = str(payload.get("sha256", "")).strip().lower()
+        notes = str(payload.get("notes", "")).strip()
+        if not version:
+            raise RuntimeError("Manifest missing required field: version")
+        if not download_url:
+            raise RuntimeError("Manifest missing required field: url")
+        if sha256 and not re.fullmatch(r"[0-9a-f]{64}", sha256):
+            raise RuntimeError("Manifest field sha256 must be a 64-character hex digest.")
+
+        return {
+            "manifest_url": manifest_url,
+            "version": version,
+            "url": urljoin(manifest_url, download_url),
+            "sha256": sha256,
+            "notes": notes,
+        }
+
+    def _start_update_download(self, manifest):
+        if self._update_download_running:
+            messagebox.showinfo("Update Download", "An update download is already in progress.")
+            return
+        self._update_download_running = True
+        self._refresh_update_status_banner(f"Downloading update {manifest.get('version', '').strip()}...")
+        worker = threading.Thread(target=self._download_update_worker, args=(dict(manifest),), daemon=True)
+        worker.start()
+
+    def _download_update_worker(self, manifest):
+        temp_path = ""
+        try:
+            temp_path = self._download_update_payload(manifest)
+            self._ui_post("update_download_ready", manifest, temp_path)
+        except Exception as exc:
+            if temp_path:
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+            self._ui_post("update_download_error", str(exc))
+        finally:
+            self._ui_post("update_download_finished")
+
+    def _download_update_payload(self, manifest):
+        download_url = str(manifest.get("url", "")).strip()
+        if not download_url:
+            raise RuntimeError("Update download URL is missing.")
+
+        fd, temp_path = tempfile.mkstemp(prefix="sbs_dsw_update_", suffix=".exe")
+        os.close(fd)
+        digest = hashlib.sha256()
+        req = Request(download_url, headers={"User-Agent": f"sbs-dsw/{APP_VERSION}"})
+        try:
+            with urlopen(req, timeout=UPDATE_HTTP_TIMEOUT_S) as res, open(temp_path, "wb") as f:
+                while True:
+                    chunk = res.read(UPDATE_DOWNLOAD_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    digest.update(chunk)
+        except HTTPError as exc:
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+            raise RuntimeError(f"Update file HTTP error {exc.code}: {exc.reason}") from exc
+        except URLError as exc:
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+            raise RuntimeError(f"Update download failed: {exc.reason}") from exc
+        except Exception:
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+            raise
+
+        if os.path.getsize(temp_path) <= 0:
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+            raise RuntimeError("Downloaded update file is empty.")
+
+        expected = str(manifest.get("sha256", "")).strip().lower()
+        actual = digest.hexdigest()
+        if expected and actual != expected:
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+            raise RuntimeError("Downloaded update hash mismatch.")
+        return temp_path
+
+    def _on_update_available(self, manifest, manual=False):
+        target = str(manifest.get("version", "")).strip() or "new version"
+        notes = str(manifest.get("notes", "")).strip()
+        summary = (
+            f"A newer version is available.\n\n"
+            f"Current: {APP_VERSION}\n"
+            f"Available: {target}\n\n"
+            "Download and install now? The app will close and restart automatically."
+        )
+        if notes:
+            short_notes = notes if len(notes) <= 700 else f"{notes[:700].rstrip()}..."
+            summary += f"\n\nNotes:\n{short_notes}"
+        self._refresh_update_status_banner(f"Update available: {target}")
+        if messagebox.askyesno("Update Available", summary):
+            self._start_update_download(manifest)
+        elif manual:
+            self.log(f"Update deferred: {target}")
+
+    def _on_update_up_to_date(self, manifest, manual=False):
+        current = APP_VERSION
+        remote = str(manifest.get("version", "")).strip() or current
+        self._refresh_update_status_banner(f"Up to date ({current})")
+        if manual:
+            messagebox.showinfo("No Update", f"You are up to date.\n\nCurrent: {current}\nFeed version: {remote}")
+
+    def _on_update_check_error(self, detail, manual=False):
+        text = str(detail).strip() or "Unknown error"
+        self._refresh_update_status_banner("Update check failed")
+        self.log(f"Update check failed: {text}")
+        if manual:
+            messagebox.showerror("Update Check Failed", text)
+
+    def _on_update_download_ready(self, manifest, temp_path):
+        target = str(manifest.get("version", "")).strip() or "new version"
+        self._refresh_update_status_banner(f"Downloaded update {target}")
+        self.log(f"Update downloaded: {temp_path}")
+        if not messagebox.askyesno(
+            "Install Update",
+            f"Update {target} is downloaded.\n\nInstall now and restart the app?",
+        ):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+            self._refresh_update_status_banner("Update install canceled")
+            return
+        try:
+            self._launch_update_installer(temp_path, target)
+        except Exception as exc:
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+            self._refresh_update_status_banner("Failed to start updater")
+            messagebox.showerror("Update Install Failed", str(exc))
+
+    def _on_update_download_error(self, detail):
+        text = str(detail).strip() or "Unknown download error"
+        self._refresh_update_status_banner("Update download failed")
+        self.log(f"Update download failed: {text}")
+        messagebox.showerror("Update Download Failed", text)
+
+    def _launch_update_installer(self, temp_path, target_version):
+        if not getattr(sys, "frozen", False):
+            raise RuntimeError("Self-update is only available from packaged sbs_dsw.exe.")
+
+        exe_path = Path(sys.executable).resolve()
+        if not exe_path.exists():
+            raise RuntimeError(f"Executable not found: {exe_path}")
+
+        script_fd, script_name = tempfile.mkstemp(prefix="sbs_dsw_updater_", suffix=".cmd")
+        os.close(script_fd)
+        script_path = Path(script_name)
+        script_content = r"""@echo off
+setlocal enableextensions
+set "APP_EXE=%~1"
+set "NEW_EXE=%~2"
+if "%APP_EXE%"=="" exit /b 2
+if "%NEW_EXE%"=="" exit /b 2
+
+for /L %%I in (1,1,90) do (
+    copy /Y "%NEW_EXE%" "%APP_EXE%" >nul 2>&1 && goto installed
+    timeout /t 1 /nobreak >nul
+)
+
+start "" "%APP_EXE%"
+exit /b 1
+
+:installed
+del /f /q "%NEW_EXE%" >nul 2>&1
+start "" "%APP_EXE%"
+exit /b 0
+"""
+        script_path.write_text(script_content, encoding="utf-8", newline="\r\n")
+
+        creationflags = 0
+        creationflags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        creationflags |= int(getattr(subprocess, "DETACHED_PROCESS", 0))
+        creationflags |= int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        subprocess.Popen(
+            ["cmd", "/c", str(script_path), str(exe_path), str(temp_path)],
+            close_fds=True,
+            creationflags=creationflags,
+        )
+        self.log(f"Applying update {target_version} from {temp_path}")
+        self._refresh_update_status_banner(f"Installing update {target_version}...")
+        messagebox.showinfo(
+            "Installing Update",
+            f"Installing version {target_version}.\n\nThe app will close and restart automatically.",
+        )
+        self.shutdown()
+        self.root.destroy()
 
     def _install_output_root(self):
         if getattr(sys, "frozen", False):
@@ -3244,6 +3637,20 @@ class SBE83GuiApp:
                 messagebox.showwarning(*args, **kwargs)
             elif event == "show_info":
                 messagebox.showinfo(*args, **kwargs)
+            elif event == "update_available":
+                self._on_update_available(*args, **kwargs)
+            elif event == "update_up_to_date":
+                self._on_update_up_to_date(*args, **kwargs)
+            elif event == "update_check_error":
+                self._on_update_check_error(*args, **kwargs)
+            elif event == "update_check_finished":
+                self._update_check_running = False
+            elif event == "update_download_ready":
+                self._on_update_download_ready(*args, **kwargs)
+            elif event == "update_download_error":
+                self._on_update_download_error(*args, **kwargs)
+            elif event == "update_download_finished":
+                self._update_download_running = False
             drained += 1
         if not self.shutdown_event.is_set():
             self.root.after(60, self._process_ui_events)

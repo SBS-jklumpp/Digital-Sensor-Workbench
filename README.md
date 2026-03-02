@@ -1,6 +1,6 @@
 ﻿# Sea-Bird Scientific Digital Sensor Workbench (SBS DSW)
 
-Version: `v1.2.0`
+Version: `v1.3.0`
 
 This file is the primary end-user guide and is the source opened by the in-app `Help` link.
 
@@ -46,7 +46,22 @@ SBS DSW is a bench workflow tool for digital sensors. It combines:
 - per-port serial debug consoles
 - session history, comparison plotting, and exportable artifacts
 
-## What Is New In `v1.2.0`
+## What Is New In `v1.3.0`
+
+- Built-in web updater for packaged `sbs_dsw.exe`:
+  - checks a hosted manifest URL
+  - downloads newer exe builds
+  - verifies optional SHA256
+  - swaps executable on restart without manual reinstall
+- New updater controls:
+  - header link: `Update`
+  - `Actions` button: `Check Update`
+  - `Actions` controls: `Auto Check Updates`, `Update Feed URL`
+- Added local update server tooling:
+  - `tools/update_server/publish_update.py`
+  - `tools/update_server/serve_updates.py`
+
+## What Was New In `v1.2.0`
 
 - Help link navigation fixed in packaged app (`Help` no longer resolves section links to `_MEI...` directory index pages).
 
@@ -95,9 +110,68 @@ python sbs_dsw.py
 Get-ChildItem .\SBE83\sessions\PreCalTest | Sort-Object LastWriteTime -Descending | Select-Object -First 10
 ```
 
+## Web Updater Setup (No GitHub Release Required)
+
+`sbs_dsw.exe` now supports web-based self-update using a JSON manifest URL.
+
+In-app controls:
+
+- `Actions -> Check Update`
+- `Actions -> Update Feed URL`
+- `Actions -> Auto Check Updates`
+- Header link: `Update`
+
+Manifest JSON format (host this on any HTTP/HTTPS endpoint):
+
+```json
+{
+  "version": "1.3.0",
+  "url": "https://your-server.example.com/sbs_dsw.exe",
+  "sha256": "optional_64_char_sha256_hex",
+  "notes": "Optional release notes shown in the prompt."
+}
+```
+
+Example file in repo: `docs/update_manifest_example.json`
+
+### Create Your Own Update Server (included in this repo)
+
+1. Publish the latest exe + manifest:
+
+```powershell
+python .\tools\update_server\publish_update.py --exe .\dist\sbs_dsw.exe --version 1.3.0 --notes "Bug fixes"
+```
+
+If your built file name/path is different, pass that path to `--exe` (for example `.\dist\.exe`).
+
+2. Start the server:
+
+```powershell
+python .\tools\update_server\serve_updates.py --host 0.0.0.0 --port 8080
+```
+
+3. In the app, set `Update Feed URL` to:
+
+```text
+http://<your-server-ip>:8080/manifest.json
+```
+
+More details: `tools/update_server/README.md`
+
+How future updates work:
+
+1. Build your new `sbs_dsw.exe`.
+2. Upload it to your web server (same URL is fine).
+3. Update the manifest `version` (and `sha256` if used).
+4. Clients click `Check Update` (or auto-check on startup) and install directly from that URL.
+
+Optional override:
+
+- Set env var `SBS_DSW_UPDATE_MANIFEST_URL` to force a manifest URL for that machine/session.
+
 ## UI Map
 
-- Header links: `Help`, `About`, `Results`, `Live`, `Config`, `Reset`
+- Header links: `Help`, `About`, `Update`, `Results`, `Live`, `Config`, `Reset`
 - Main cards: `Connection`, `Port Station View`, `Test Setup`, `Actions`
 - Tabs: `Test Results`, `Live Plot`, `Run Log`, `Serial Consoles`
 
@@ -164,12 +238,15 @@ Buttons:
 - `Load Session`: load a different session JSON and plot
 - `Reload JSON`: reload current session JSON for plotting
 - `CSV Column`: show/hide `sample_csv` column in results table
+- `Check Update`: manually check update feed and install if newer
 
 Run controls:
 
 - `Runs`: batch count per connected port
 - `Delay (s)`: wait time between runs in a batch
 - `Dark Mode`: theme toggle
+- `Auto Check Updates`: startup update check toggle
+- `Update Feed URL`: configure hosted manifest URL
 - `Units tested`: unique serial counter (session limit is 10)
 - `Runs left`: active batch progress by port
 

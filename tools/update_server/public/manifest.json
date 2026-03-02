@@ -1,0 +1,6 @@
+{
+  "version": "0.0.0",
+  "url": "sbs_dsw.exe",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "notes": "Replace this manifest by running publish_update.py."
+}
