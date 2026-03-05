@@ -5,7 +5,7 @@ a = Analysis(
     ['sbs_dsw.py'],
     pathex=[],
     binaries=[],
-    datas=[('README.md', '.'), ('docs/QUICKSTART_ONE_PAGE.md', 'docs')],
+    datas=[('README.md', '.'), ('docs/QUICKSTART_ONE_PAGE.md', 'docs'), ('assets/logo.png', 'assets'), ('assets/sbs_dsw_icon.ico', 'assets')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

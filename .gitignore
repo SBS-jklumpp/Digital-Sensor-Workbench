@@ -19,8 +19,8 @@ __pycache__/
 
 # runtime-local app config/state
 sbs_dsw_config.json
-src/engineers_field_kit_multitool/engineers_field_kit_multitool_config.json
-src/engineers_field_kit_multitool/sessions_local/
+src/sbs_dsw/sbs_dsw_config.json
+src/sbs_dsw/sessions_local/
 
 # local update server artifacts
 tools/update_server/public/sbs_dsw.exe

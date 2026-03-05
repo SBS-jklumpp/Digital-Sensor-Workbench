@@ -169,7 +169,7 @@ DEFAULT_SAMPLE_SETUP = {
 APP_NAME = "Seabird Sensor Digital Workbench"
 APP_SUBTITLE = "Digital Sensor Workbench"
 APP_TAGLINE = "Serial | Plot | Analyze | Debug"
-APP_VERSION = "v1.4.0"
+APP_VERSION = "v1.5.0"
 APP_AUTHOR = "Justin Klumpp"
 APP_COMPANY = "Seabird Scientific"
 APP_CONTACT_EMAIL = "jklumpp@seabird.com"
@@ -189,7 +189,7 @@ def _resolve_app_config_file():
     if getattr(sys, "frozen", False):
         exe_dir = os.path.dirname(os.path.abspath(sys.executable))
         return os.path.join(exe_dir, "sbs_dsw_config.json")
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "engineers_field_kit_multitool_config.json")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "sbs_dsw_config.json")
 
 
 APP_CONFIG_FILE = _resolve_app_config_file()
@@ -778,12 +778,23 @@ class SBE83GuiApp:
                 pass
         if hasattr(self, "hero_frame"):
             self.hero_frame.configure(bg=colors["hero_bg"], highlightbackground=colors["hero_border"])
+        if hasattr(self, "hero_left"):
+            self.hero_left.configure(bg=colors["hero_bg"])
         if hasattr(self, "hero_title_label"):
             self.hero_title_label.configure(bg=colors["hero_bg"], fg=colors["hero_title"])
+        if hasattr(self, "hero_subtitle_label"):
+            self.hero_subtitle_label.configure(bg=colors["hero_bg"], fg=colors["muted"])
+        if hasattr(self, "hero_logo_label"):
+            self.hero_logo_label.configure(bg=colors["hero_bg"])
         if hasattr(self, "hero_right"):
             self.hero_right.configure(bg=colors["hero_bg"])
         if hasattr(self, "hero_right_top"):
             self.hero_right_top.configure(bg=colors["hero_bg"])
+        for sep in getattr(self, "hero_separators", []):
+            try:
+                sep.configure(bg=colors["hero_bg"], fg=colors["border"])
+            except Exception:
+                pass
         for attr in (
             "hero_help_link",
             "hero_about_link",
@@ -799,6 +810,10 @@ class SBE83GuiApp:
             self.hero_version_label.configure(bg=colors["hero_bg"], fg=colors["accent"])
         if hasattr(self, "hero_tagline_label"):
             self.hero_tagline_label.configure(bg=colors["hero_bg"], fg=colors["muted"])
+        if hasattr(self, "hero_title_stack"):
+            self.hero_title_stack.configure(bg=colors["hero_bg"])
+        if hasattr(self, "hero_subtitle_row"):
+            self.hero_subtitle_row.configure(bg=colors["hero_bg"])
         if hasattr(self, "port_grid_empty_label"):
             self.port_grid_empty_label.configure(bg=colors["bg"], fg=colors["muted"])
         for slot in getattr(self, "port_slots", {}).values():
@@ -829,6 +844,47 @@ class SBE83GuiApp:
 
     def _on_toggle_dark_mode(self):
         self._apply_theme(persist=True)
+
+    def _load_header_logo(self):
+        """Load and display logo in the header."""
+        colors = self._theme_colors()
+        hero_bg = colors["hero_bg"]
+        
+        # Find logo file
+        logo_paths = [
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "assets", "logo.png"),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo.png"),
+        ]
+        if getattr(sys, "frozen", False):
+            exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+            logo_paths.insert(0, os.path.join(exe_dir, "assets", "logo.png"))
+            logo_paths.insert(0, os.path.join(exe_dir, "logo.png"))
+        
+        logo_path = None
+        for p in logo_paths:
+            if os.path.isfile(p):
+                logo_path = p
+                break
+        
+        if logo_path:
+            try:
+                self._logo_image = tk.PhotoImage(file=logo_path)
+                # Subsample if image is large (resize to ~64px height for visibility)
+                width = self._logo_image.width()
+                height = self._logo_image.height()
+                target_height = 64
+                if height > target_height:
+                    scale = max(1, height // target_height)
+                    self._logo_image = self._logo_image.subsample(scale, scale)
+                
+                self.hero_logo_label = tk.Label(
+                    self.hero_left,
+                    image=self._logo_image,
+                    bg=hero_bg,
+                )
+                self.hero_logo_label.pack(side=tk.LEFT)
+            except Exception:
+                pass  # Logo not critical, fail silently
 
     def _on_header_link_enter(self, widget):
         try:
@@ -1032,41 +1088,64 @@ class SBE83GuiApp:
         self.root.minsize(900, 580)
         
         # ═══════════════════════════════════════════════════════════════════════
-        # HERO HEADER — Modern app bar with gradient-like styling
+        # HERO HEADER — Modern app bar with logo and sleek styling
         # ═══════════════════════════════════════════════════════════════════════
-        self.hero_frame = tk.Frame(self.root, bg=DARK_PANEL_2, highlightthickness=1, highlightbackground=DARK_BORDER)
+        colors = self._theme_colors()
+        hero_bg = colors["hero_bg"]
+        hero_border = colors["hero_border"]
+        
+        self.hero_frame = tk.Frame(self.root, bg=hero_bg, highlightthickness=1, highlightbackground=hero_border)
         self.hero_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
         
-        # Left side: App branding
-        hero_left = tk.Frame(self.hero_frame, bg=DARK_PANEL_2)
-        hero_left.pack(side=tk.LEFT, padx=(8, 0))
+        # Left side: Logo + App branding
+        self.hero_left = tk.Frame(self.hero_frame, bg=hero_bg)
+        self.hero_left.pack(side=tk.LEFT, padx=(12, 0), pady=8)
+        
+        # Load and display logo
+        self._load_header_logo()
+        
+        # Title and version in a vertical stack
+        self.hero_title_stack = tk.Frame(self.hero_left, bg=hero_bg)
+        self.hero_title_stack.pack(side=tk.LEFT, padx=(10, 0))
         
         self.hero_title_label = tk.Label(
-            hero_left,
+            self.hero_title_stack,
             text=APP_NAME,
-            bg=DARK_PANEL_2,
-            fg=DARK_TEXT,
-            font=("Segoe UI Variable Display", 14, "bold"),
-            padx=0,
-            pady=10,
+            bg=hero_bg,
+            fg=colors["hero_title"],
+            font=("Segoe UI Variable Display", 15, "bold"),
+            anchor="w",
         )
-        self.hero_title_label.pack(side=tk.LEFT)
+        self.hero_title_label.pack(anchor="w")
         
-        self.hero_version_label = tk.Label(
-            hero_left,
-            text=APP_VERSION,
-            bg=DARK_PANEL_2,
-            fg=DARK_ACCENT,
-            font=("Segoe UI Variable", 10, "bold"),
-            padx=8,
+        # Subtitle row with version badge
+        self.hero_subtitle_row = tk.Frame(self.hero_title_stack, bg=hero_bg)
+        self.hero_subtitle_row.pack(anchor="w")
+        
+        self.hero_subtitle_label = tk.Label(
+            self.hero_subtitle_row,
+            text=APP_SUBTITLE,
+            bg=hero_bg,
+            fg=colors["muted"],
+            font=("Segoe UI Variable", 9),
         )
-        self.hero_version_label.pack(side=tk.LEFT, pady=(2, 0))
+        self.hero_subtitle_label.pack(side=tk.LEFT)
+        
+        # Version badge with accent styling
+        self.hero_version_label = tk.Label(
+            self.hero_subtitle_row,
+            text=f"  {APP_VERSION}",
+            bg=hero_bg,
+            fg=colors["accent"],
+            font=("Segoe UI Variable", 9, "bold"),
+        )
+        self.hero_version_label.pack(side=tk.LEFT)
         
         # Right side: Navigation links
-        self.hero_right = tk.Frame(self.hero_frame, bg=DARK_PANEL_2)
-        self.hero_right.pack(side=tk.RIGHT, padx=12, pady=6)
+        self.hero_right = tk.Frame(self.hero_frame, bg=hero_bg)
+        self.hero_right.pack(side=tk.RIGHT, padx=12, pady=8)
         
-        self.hero_right_top = tk.Frame(self.hero_right, bg=DARK_PANEL_2)
+        self.hero_right_top = tk.Frame(self.hero_right, bg=hero_bg)
         self.hero_right_top.pack(anchor="e")
         
         # Nav links with modern styling and separators
@@ -1082,14 +1161,17 @@ class SBE83GuiApp:
         
         for i, (text, command, attr_name) in enumerate(nav_links):
             if i > 0:
-                sep = tk.Label(self.hero_right_top, text="│", bg=DARK_PANEL_2, fg=DARK_BORDER, font=("Segoe UI", 9))
+                sep = tk.Label(self.hero_right_top, text="│", bg=hero_bg, fg=colors["border"], font=("Segoe UI", 9))
                 sep.pack(side=tk.LEFT, padx=(6, 6))
+                if not hasattr(self, "hero_separators"):
+                    self.hero_separators = []
+                self.hero_separators.append(sep)
             
             link = tk.Label(
                 self.hero_right_top,
                 text=text,
-                bg=DARK_PANEL_2,
-                fg=DARK_TEXT_SUB,
+                bg=hero_bg,
+                fg=colors["muted"],
                 font=("Segoe UI Variable", 9),
                 cursor="hand2",
             )
@@ -1103,11 +1185,11 @@ class SBE83GuiApp:
         self.hero_tagline_label = tk.Label(
             self.hero_right,
             text=APP_TAGLINE,
-            bg=DARK_PANEL_2,
-            fg=DARK_MUTED,
-            font=("Segoe UI Variable", 9),
+            bg=hero_bg,
+            fg=colors["muted"],
+            font=("Segoe UI Variable", 9, "italic"),
         )
-        self.hero_tagline_label.pack(anchor="e", pady=(2, 0))
+        self.hero_tagline_label.pack(anchor="e", pady=(4, 0))
 
         # ═══════════════════════════════════════════════════════════════════════
         # MAIN LAYOUT — Fixed container with top controls and bottom notebook
@@ -1578,10 +1660,22 @@ class SBE83GuiApp:
         in_code = False
         in_list = False
         link_re = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+        seen_ids = {}
 
         def convert_inline(text):
             escaped = html.escape(text)
             return link_re.sub(lambda m: f'<a href="{html.escape(m.group(2), quote=True)}">{html.escape(m.group(1))}</a>', escaped)
+
+        def make_heading_id(text):
+            slug = self._slugify_heading(text)
+            if not slug:
+                slug = "heading"
+            if slug in seen_ids:
+                seen_ids[slug] += 1
+                slug = f"{slug}-{seen_ids[slug]}"
+            else:
+                seen_ids[slug] = 0
+            return slug
 
         for raw in lines:
             line = raw.rstrip("\n")
@@ -1613,7 +1707,9 @@ class SBE83GuiApp:
                     out.append("</ul>")
                     in_list = False
                 level = len(heading.group(1))
-                out.append(f"<h{level}>{convert_inline(heading.group(2).strip())}</h{level}>")
+                heading_text = heading.group(2).strip()
+                heading_id = make_heading_id(heading_text)
+                out.append(f'<h{level} id="{heading_id}">{convert_inline(heading_text)}</h{level}>')
                 continue
 
             bullet = re.match(r"^\s*[-*]\s+(.*)$", line)
@@ -1636,10 +1732,53 @@ class SBE83GuiApp:
         return "\n".join(out)
 
     @staticmethod
+    def _slugify_heading(text):
+        """Convert heading text to a URL-friendly anchor ID (GitHub-style)."""
+        # Remove HTML tags if present
+        text = re.sub(r"<[^>]+>", "", text)
+        # Decode HTML entities
+        text = html.unescape(text)
+        # Convert to lowercase
+        text = text.lower()
+        # Remove emoji and special unicode
+        text = re.sub(r"[^\w\s-]", "", text)
+        # Replace whitespace with dashes
+        text = re.sub(r"\s+", "-", text.strip())
+        # Remove consecutive dashes
+        text = re.sub(r"-+", "-", text)
+        return text.strip("-")
+
+    @staticmethod
+    def _add_heading_ids(html_text):
+        """Add id attributes to heading tags for anchor navigation."""
+        if not html_text:
+            return html_text
+        heading_re = re.compile(r"<(h[1-6])>(.+?)</\1>", re.IGNORECASE | re.DOTALL)
+        seen_ids = {}
+
+        def add_id(match):
+            tag = match.group(1).lower()
+            content = match.group(2)
+            slug = SBE83GuiApp._slugify_heading(content)
+            if not slug:
+                slug = "heading"
+            # Handle duplicates by appending a number
+            if slug in seen_ids:
+                seen_ids[slug] += 1
+                slug = f"{slug}-{seen_ids[slug]}"
+            else:
+                seen_ids[slug] = 0
+            return f'<{tag} id="{slug}">{content}</{tag}>'
+
+        return heading_re.sub(add_id, html_text)
+
+    @staticmethod
     def _render_markdown_html(markdown_text):
         try:
             md = mistune.create_markdown(plugins=["table"])
-            return md(markdown_text)
+            rendered = md(markdown_text)
+            # Add heading IDs for anchor navigation
+            return SBE83GuiApp._add_heading_ids(rendered)
         except Exception:
             return None
 
@@ -1651,13 +1790,23 @@ class SBE83GuiApp:
         abs_scheme = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
         href_re = re.compile(r'href=(["\'])(.*?)\1', re.IGNORECASE)
 
+        def normalize_anchor(anchor):
+            # Apply same normalization as _slugify_heading
+            anchor = anchor.lower()
+            anchor = re.sub(r"[^\w\s-]", "", anchor)
+            anchor = re.sub(r"\s+", "-", anchor.strip())
+            anchor = re.sub(r"-+", "-", anchor)
+            return anchor.strip("-")
+
         def repl(match):
             quote = match.group(1)
             href = (match.group(2) or "").strip()
             if not href:
                 return match.group(0)
             if href.startswith("#"):
-                new_href = f"{page_uri}{href}"
+                # Normalize the anchor to match heading IDs
+                anchor = normalize_anchor(href[1:])
+                new_href = f"{page_uri}#{anchor}"
             elif href.startswith("//") or abs_scheme.match(href):
                 new_href = href
             else:
@@ -1754,6 +1903,26 @@ class SBE83GuiApp:
         win.grab_set()
         win.focus_force()
 
+    @staticmethod
+    def _preprocess_markdown_for_help(text):
+        """Clean raw markdown for help display - remove CDATA, GitHub badges, etc."""
+        # Remove BOM if present
+        if text.startswith("\ufeff"):
+            text = text[1:]
+        # Remove CDATA wrapper
+        text = re.sub(r"<!\[CDATA\[", "", text)
+        text = re.sub(r"\]\]>", "", text)
+        # Remove div align="center" blocks (GitHub-specific)
+        text = re.sub(r"<div[^>]*align=['\"]center['\"][^>]*>", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"</div>", "", text, flags=re.IGNORECASE)
+        # Remove badge images (shields.io)
+        text = re.sub(r"!\[[^\]]*\]\(https?://img\.shields\.io[^)]*\)", "", text)
+        # Remove empty lines at start
+        lines = text.split("\n")
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        return "\n".join(lines)
+
     def open_readme_help(self):
         candidates = []
         if getattr(sys, "frozen", False):
@@ -1778,13 +1947,14 @@ class SBE83GuiApp:
             return
         try:
             markdown_text = readme_path.read_text(encoding="utf-8", errors="replace")
+            markdown_text = self._preprocess_markdown_for_help(markdown_text)
             body_html = self._render_markdown_html(markdown_text)
             if not body_html:
                 body_html = self._markdown_to_basic_html(markdown_text)
             base_href = readme_path.parent.resolve().as_uri()
             if not base_href.endswith("/"):
                 base_href += "/"
-            with tempfile.NamedTemporaryFile("w", delete=False, suffix="_engineers_field_kit_help.html", encoding="utf-8") as f:
+            with tempfile.NamedTemporaryFile("w", delete=False, suffix="_sbs_dsw_help.html", encoding="utf-8") as f:
                 temp_path = Path(f.name)
             page_uri = temp_path.resolve().as_uri()
             body_html = self._rewrite_help_links(body_html, page_uri, base_href)
@@ -3789,6 +3959,41 @@ exit /b 0
                 slot["state_label"].configure(bg=state_bg, fg=state_fg)
                 card.grid_remove()
 
+    def _query_instrument_serial_quick(self, port):
+        """Query instrument serial number via 'ds' command (single attempt, non-blocking)."""
+        ser = self.serial_pool.get(port)
+        if not ser or not ser.is_open:
+            return None
+        try:
+            ser.reset_input_buffer()
+            self.send_cmd(ser, "ds", port=port)
+            time.sleep(0.2)
+            lines = []
+            started = time.time()
+            while time.time() - started < 2.0:
+                line = self.read_line(ser, port=port)
+                if line:
+                    lines.append(line)
+                elif lines:
+                    break
+            if not lines:
+                return None
+            ds = {}
+            for line in lines:
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    ds[key.strip()] = value.strip()
+            return self.extract_serial_number(ds, lines)
+        except Exception as exc:
+            self.log(f"[{port}] Could not query serial number: {exc}")
+            return None
+
+    def _query_serial_async(self, port):
+        """Background thread to query serial number and update UI."""
+        serial_number = self._query_instrument_serial_quick(port)
+        if serial_number:
+            self._ui_post("set_port_status", port, "CONNECTED", serial=serial_number)
+
     def connect_selected_port(self):
         port = self.com_var.get().strip()
         if not port:
@@ -3804,6 +4009,7 @@ exit /b 0
             self.serial_pool[port] = ser
             self.log(f"Connected: {port} @ {baud}")
             self.set_port_status(port, "CONNECTED")
+            threading.Thread(target=self._query_serial_async, args=(port,), daemon=True).start()
         except Exception as exc:
             messagebox.showerror("Connection Error", f"{port}: {exc}")
             self.set_port_status(port, "ERROR")
@@ -3829,6 +4035,7 @@ exit /b 0
         self.refresh_ports()
         count = 0
         baud = int(self.baudrate_var.get())
+        newly_connected = []
         for port in self.available_ports:
             if port in self.serial_pool and self.serial_pool[port].is_open:
                 continue
@@ -3837,10 +4044,13 @@ exit /b 0
                     port=port, baudrate=baud, bytesize=8, parity="N", stopbits=1, timeout=2
                 )
                 count += 1
+                newly_connected.append(port)
                 self.set_port_status(port, "CONNECTED")
             except Exception as exc:
                 self.log(f"Connect failed {port}: {exc}")
                 self.set_port_status(port, "ERROR")
+        for port in newly_connected:
+            threading.Thread(target=self._query_serial_async, args=(port,), daemon=True).start()
         self.log(f"Connect-all complete: {count} new connection(s) @ {baud}")
         self.update_connection_labels()
 

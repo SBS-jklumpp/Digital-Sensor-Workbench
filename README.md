@@ -501,7 +501,7 @@ python -m venv .venv
 pip install -e .
 
 # Run application
-python -m engineers_field_kit_multitool.app
+python -m sbs_dsw.app
 ```
 
 ### Build Executable
@@ -520,7 +520,7 @@ pyinstaller app.spec
 
 ```
 git_entry/
-├── src/engineers_field_kit_multitool/
+├── src/sbs_dsw/
 │   ├── app.py          # Main application
 │   ├── styles.py       # Theme and styling
 │   └── *_config.json   # Runtime configuration

@@ -1,4 +1,4 @@
-from src.engineers_field_kit_multitool.app import main
+from src.sbs_dsw.app import main
 
 
 if __name__ == "__main__":

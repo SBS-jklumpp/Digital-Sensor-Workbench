@@ -112,7 +112,7 @@ Check these columns in the Results table:
 **Run from source:**
 ```powershell
 cd src
-python -m engineers_field_kit_multitool.app
+python -m sbs_dsw.app
 ```
 
 ---
