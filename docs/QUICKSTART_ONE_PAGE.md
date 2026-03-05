@@ -1,103 +1,134 @@
-﻿# Quickstart One-Page Addendum
+﻿<![CDATA[# ⚡ SBS DSW Quickstart Guide
 
-Use this as a fast checklist for new users and time-critical bench runs.
+> **One-page reference for fast bench runs**
 
-## Quick Navigation
+---
 
-| Need | Go here |
-|---|---|
-| shortest path to first run | [Fast Path](./QUICKSTART_ONE_PAGE.md#fast-path) |
-| update app from network feed | [Update App (Optional)](./QUICKSTART_ONE_PAGE.md#update-app-optional) |
-| full setup checklist | [Full One-Page Checklist](./QUICKSTART_ONE_PAGE.md#full-one-page-checklist) |
-| pass/fail meaning | [Pass/Warn/Fail Rules](./QUICKSTART_ONE_PAGE.md#passwarnfail-rules) |
-| immediate unblock steps | [If Blocked](./QUICKSTART_ONE_PAGE.md#if-blocked) |
+## 🎯 Fast Path (60 Seconds)
 
-## Fast Path
-
-1. Launch `sbs_dsw.exe`.
-2. `Refresh Ports`.
-3. Connect ports.
-4. Fill `Operator`.
-5. Set `Samples` (>=20).
-6. Click `Run Test`.
-7. Review `Test Results`.
-8. Click `Save JSON`.
-
-## Update App (Optional)
-
-1. Open `sbs_dsw.exe`.
-2. In `Actions`, click `Update Feed URL` and paste your manifest URL.
-3. Click `Check Update`.
-4. Confirm install when prompted.
-5. App closes, replaces exe, and restarts automatically.
-
-## Full One-Page Checklist
-
-### 1. Launch and Connect
-
-1. Open `sbs_dsw.exe`.
-2. Click `Refresh Ports`.
-3. Set COM port and baud.
-4. Click `Connect Selected` or `Connect All`.
-
-Success check:
-
-- connected ports are listed
-- Port Station cards show `CONNECTED`
-
-### 2. Configure Run
-
-1. In `Test Setup`, enter `Operator`.
-2. Set `Samples` (minimum 20).
-3. Confirm `Results Root`.
-4. In `Actions`, set:
-- `Runs` (start with `1`)
-- `Delay (s)` (start with `0`)
-
-### 3. Execute
-
-1. Click `Run Test`.
-2. Watch:
-- `Live Plot` for signal behavior
-- `Run Log` for progress
-- Port statuses (`RUNNING`, then `PASS/WARN/FAIL`)
-
-### 4. Review
-
-1. Open `Test Results`.
-2. Check:
-- `red_ns`
-- `blue_ns`
-- voltage std/avg columns
-- `flags`
-
-### 5. Save
-
-1. Click `Save JSON`.
-2. Optional: `Export Console CSV` in `Serial Consoles`.
-
-## Quick Commands (Optional)
-
-### Run packaged app
-
-```powershell
-.\dist\sbs_dsw.exe
+```
+1. Launch           →  sbs_dsw.exe
+2. Refresh          →  Click "Refresh" button
+3. Connect          →  Select port + baud → "▶ Connect"
+4. Setup            →  Enter Operator name, set Samples ≥ 20
+5. Run              →  Click "▶ Run Test"
+6. Monitor          →  Watch Live Plot (auto-opens)
+7. Review           →  Check Results tab (auto-switches when done)
+8. Save             →  Click "Save"
 ```
 
-### Run from source
+---
 
+## 📋 Step-by-Step Checklist
+
+### Step 1: Connect
+
+| Action | Control |
+|--------|---------|
+| Scan ports | Click **Refresh** |
+| Select COM port | Use dropdown |
+| Set baud rate | Use dropdown (typically 9600 or 115200) |
+| Connect | Click **▶ Connect** |
+
+✅ **Success:** Port shows in connected list, status badge shows "CONNECTED"
+
+### Step 2: Configure
+
+| Field | Value |
+|-------|-------|
+| **Operator** | Your name (required) |
+| **Samples** | 20 or more (required) |
+| **Results Root** | Output folder (auto-set) |
+
+Optional: Bath ID, Notes, Bath Temp, Salinity
+
+### Step 3: Run Test
+
+| Action | Result |
+|--------|--------|
+| Click **▶ Run Test** | Panels auto-collapse, Live Plot opens |
+| Watch progress | Real-time plotting during run |
+| Wait for complete | Auto-switches to Results tab |
+
+### Step 4: Review Results
+
+Check these columns in the Results table:
+
+| Column | What to Look For |
+|--------|------------------|
+| **red_ns** | Noise ≤ 10 ns = PASS |
+| **blue_ns** | Noise ≤ 10 ns = PASS |
+| **flags** | Should be empty for good runs |
+| **severity** | PASS / WARN / FAIL |
+
+### Step 5: Save
+
+| Action | Control |
+|--------|---------|
+| Save session | Click **Save** |
+| Export console | Use Console tab → Export |
+
+---
+
+## 🚦 Pass/Warn/Fail Rules
+
+| Result | Criteria |
+|--------|----------|
+| **PASS** | Red AND Blue noise ≤ 10 ns |
+| **WARN** | Either noise > 10 ns AND ≤ 20 ns |
+| **FAIL** | Either noise > 20 ns |
+
+---
+
+## 🆕 v1.4.0 Quick Tips
+
+| Feature | How to Use |
+|---------|-----------|
+| **Max View** | Click "□ Max View" to collapse all panels |
+| **Auto Layout** | Panels auto-hide when test starts |
+| **Sniffer** | Use Sniffer tab to view raw serial data |
+| **Bridge Mode** | Intercept external app traffic via com0com |
+
+---
+
+## 🔧 If Blocked
+
+| Problem | Solution |
+|---------|----------|
+| "Run Test" disabled | Connect a port AND fill Operator field |
+| No samples collected | Check baud rate and Sample Cmd |
+| Plot looks wrong | Verify parser delimiter and field config |
+| Console no response | Toggle CR/LF, click Read after Send |
+
+---
+
+## ⌨️ Quick Commands
+
+**Run packaged app:**
 ```powershell
-python sbs_dsw.py
+.\sbs_dsw.exe
 ```
 
-## Pass/Warn/Fail Rules
+**Run from source:**
+```powershell
+cd src
+python -m engineers_field_kit_multitool.app
+```
 
-- `PASS`: red and blue noise <= 10 ns
-- `WARN`: either noise > 10 ns and <= 20 ns
-- `FAIL`: either noise > 20 ns
+---
 
-## If Blocked
+## 🔗 More Help
 
-- `Run Test` disabled: connect a port and fill `Operator`.
-- No data: verify baud and `Sample Cmd`.
-- Parsing wrong: use `Config` and re-apply parser settings.
+- **Full Documentation:** See [README.md](../README.md)
+- **In-App Help:** Click "Help" in header bar
+- **Serial Sniffer:** See [Sniffer Guide](../README.md#-serial-port-sniffer)
+- **Parser Setup:** See [Parser Config](../README.md#-sample-parser-configuration)
+
+---
+
+<div align="center">
+
+*SBS DSW v1.4.0 — Quick Reference*
+
+</div>
+]]>

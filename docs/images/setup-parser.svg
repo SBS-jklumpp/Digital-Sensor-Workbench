@@ -1,0 +1,234 @@
+<![CDATA[<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 550" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <linearGradient id="panelGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#161b22"/>
+      <stop offset="100%" style="stop-color:#0d1117"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="800" height="550" fill="#040810"/>
+  
+  <!-- Title -->
+  <text x="400" y="25" text-anchor="middle" fill="#8b949e" font-size="12">Setup Tab - Sample Parser Configuration</text>
+  
+  <!-- Tab indicator -->
+  <rect x="10" y="40" width="780" height="30" rx="4" fill="#161b22"/>
+  <text x="30" y="59" fill="#8b949e" font-size="10">📋 Results</text>
+  <text x="110" y="59" fill="#8b949e" font-size="10">📈 Live</text>
+  <text x="170" y="59" fill="#8b949e" font-size="10">⌨ Console</text>
+  <text x="245" y="59" fill="#8b949e" font-size="10">🔍 Sniffer</text>
+  <text x="315" y="59" fill="#8b949e" font-size="10">📜 Log</text>
+  <rect x="360" y="45" width="65" height="22" rx="3" fill="#00d4aa"/>
+  <text x="372" y="60" fill="#040810" font-size="10" font-weight="bold">⚙ Setup</text>
+  
+  <!-- Quick Actions Bar -->
+  <rect x="10" y="80" width="780" height="45" rx="4" fill="url(#panelGrad)" stroke="#30363d"/>
+  
+  <rect x="25" y="92" width="110" height="22" rx="3" fill="#00d4aa"/>
+  <text x="35" y="107" fill="#040810" font-size="10" font-weight="bold">Quick Setup + Plot</text>
+  
+  <rect x="145" y="92" width="105" height="22" rx="3" fill="#21262d" stroke="#30363d"/>
+  <text x="155" y="107" fill="#e6edf3" font-size="10">Load From Example</text>
+  
+  <rect x="260" y="92" width="100" height="22" rx="3" fill="#238636"/>
+  <text x="270" y="107" fill="#fff" font-size="10">Apply Measureands</text>
+  
+  <rect x="370" y="92" width="75" height="22" rx="3" fill="#21262d" stroke="#30363d"/>
+  <text x="383" y="107" fill="#e6edf3" font-size="10">Save Profile</text>
+  
+  <rect x="455" y="92" width="75" height="22" rx="3" fill="#21262d" stroke="#30363d"/>
+  <text x="468" y="107" fill="#e6edf3" font-size="10">Load Profile</text>
+  
+  <rect x="540" y="92" width="80" height="22" rx="3" fill="#da3633"/>
+  <text x="553" y="107" fill="#fff" font-size="10">Reset Default</text>
+  
+  <!-- Parser Settings -->
+  <rect x="10" y="135" width="380" height="130" rx="4" fill="url(#panelGrad)" stroke="#30363d"/>
+  <text x="25" y="155" fill="#00d4aa" font-size="11" font-weight="bold">Parser Settings</text>
+  
+  <text x="25" y="180" fill="#8b949e" font-size="10">Sample Cmd</text>
+  <rect x="105" y="167" width="80" height="20" rx="3" fill="#21262d" stroke="#30363d"/>
+  <text x="113" y="181" fill="#e6edf3" font-size="10">tsr</text>
+  
+  <text x="200" y="180" fill="#8b949e" font-size="10">Delimiter</text>
+  <rect x="260" y="167" width="40" height="20" rx="3" fill="#21262d" stroke="#30363d"/>
+  <text x="275" y="181" fill="#e6edf3" font-size="10">,</text>
+  
+  <text x="315" y="180" fill="#8b949e" font-size="10">Start</text>
+  <rect x="350" y="167" width="30" height="20" rx="3" fill="#21262d" stroke="#30363d"/>
+  <text x="360" y="181" fill="#e6edf3" font-size="10">0</text>
+  
+  <text x="25" y="210" fill="#8b949e" font-size="10">Trim Prefix</text>
+  <rect x="105" y="197" width="180" height="20" rx="3" fill="#21262d" stroke="#30363d"/>
+  
+  <text x="25" y="240" fill="#8b949e" font-size="10">Regex</text>
+  <rect x="65" y="227" width="300" height="20" rx="3" fill="#21262d" stroke="#30363d"/>
+  <text x="73" y="241" fill="#484f58" font-size="9">(optional extraction pattern)</text>
+  
+  <!-- Example Sample -->
+  <rect x="400" y="135" width="390" height="130" rx="4" fill="url(#panelGrad)" stroke="#30363d"/>
+  <text x="415" y="155" fill="#00d4aa" font-size="11" font-weight="bold">Example Sample</text>
+  
+  <text x="415" y="180" fill="#8b949e" font-size="10">Paste a sample line:</text>
+  <rect x="415" y="190" width="360" height="30" rx="3" fill="#21262d" stroke="#30363d"/>
+  <text x="423" y="210" fill="#e6edf3" font-family="Consolas, monospace" font-size="10">8.42,7.89,2.451,2.398,0.0023,0.0019</text>
+  
+  <text x="415" y="250" fill="#8b949e" font-size="10">Parsed fields: 6 tokens detected</text>
+  
+  <!-- Field Editor -->
+  <rect x="10" y="275" width="780" height="230" rx="4" fill="url(#panelGrad)" stroke="#30363d"/>
+  <text x="25" y="295" fill="#00d4aa" font-size="11" font-weight="bold">Field Configuration</text>
+  
+  <!-- Table Header -->
+  <rect x="20" y="305" width="760" height="25" rx="3" fill="#21262d"/>
+  <g fill="#8b949e" font-size="9">
+    <text x="30" y="322">Field Key</text>
+    <text x="110" y="322">Description</text>
+    <text x="210" y="322">Unit</text>
+    <text x="260" y="322">Scale</text>
+    <text x="320" y="322">Min</text>
+    <text x="370" y="322">Max</text>
+    <text x="420" y="322">StuckN</text>
+    <text x="480" y="322">Derived Expr</text>
+    <text x="600" y="322">Live</text>
+    <text x="650" y="322">Session</text>
+    <text x="720" y="322">Default</text>
+  </g>
+  
+  <!-- Field rows -->
+  <g font-size="9">
+    <!-- Row 1 -->
+    <rect x="25" y="335" width="75" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="33" y="349" fill="#e6edf3">red_noise</text>
+    
+    <rect x="105" y="335" width="95" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="113" y="349" fill="#e6edf3">Red Noise</text>
+    
+    <rect x="205" y="335" width="45" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="218" y="349" fill="#e6edf3">ns</text>
+    
+    <rect x="255" y="335" width="55" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="263" y="349" fill="#e6edf3">raw</text>
+    
+    <rect x="315" y="335" width="45" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="328" y="349" fill="#e6edf3">0</text>
+    
+    <rect x="365" y="335" width="45" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="378" y="349" fill="#e6edf3">50</text>
+    
+    <rect x="415" y="335" width="55" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="433" y="349" fill="#e6edf3">5</text>
+    
+    <rect x="475" y="335" width="115" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    
+    <rect x="600" y="338" width="14" height="14" rx="2" fill="#00d4aa"/>
+    <text x="604" y="349" fill="#040810" font-size="8">✓</text>
+    
+    <rect x="655" y="338" width="14" height="14" rx="2" fill="#00d4aa"/>
+    <text x="659" y="349" fill="#040810" font-size="8">✓</text>
+    
+    <rect x="725" y="338" width="14" height="14" rx="2" fill="#00d4aa"/>
+    <text x="729" y="349" fill="#040810" font-size="8">✓</text>
+    
+    <!-- Row 2 -->
+    <rect x="25" y="360" width="75" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="33" y="374" fill="#e6edf3">blue_noise</text>
+    
+    <rect x="105" y="360" width="95" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="113" y="374" fill="#e6edf3">Blue Noise</text>
+    
+    <rect x="205" y="360" width="45" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="218" y="374" fill="#e6edf3">ns</text>
+    
+    <rect x="255" y="360" width="55" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="263" y="374" fill="#e6edf3">raw</text>
+    
+    <rect x="315" y="360" width="45" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="328" y="374" fill="#e6edf3">0</text>
+    
+    <rect x="365" y="360" width="45" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="378" y="374" fill="#e6edf3">50</text>
+    
+    <rect x="415" y="360" width="55" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="433" y="374" fill="#e6edf3">5</text>
+    
+    <rect x="475" y="360" width="115" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    
+    <rect x="600" y="363" width="14" height="14" rx="2" fill="#00d4aa"/>
+    <text x="604" y="374" fill="#040810" font-size="8">✓</text>
+    
+    <rect x="655" y="363" width="14" height="14" rx="2" fill="#00d4aa"/>
+    <text x="659" y="374" fill="#040810" font-size="8">✓</text>
+    
+    <rect x="725" y="363" width="14" height="14" rx="2" fill="#00d4aa"/>
+    <text x="729" y="374" fill="#040810" font-size="8">✓</text>
+    
+    <!-- Row 3 -->
+    <rect x="25" y="385" width="75" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="33" y="399" fill="#e6edf3">red_voltage</text>
+    
+    <rect x="105" y="385" width="95" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="113" y="399" fill="#e6edf3">Red Voltage</text>
+    
+    <rect x="205" y="385" width="45" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="218" y="399" fill="#e6edf3">V</text>
+    
+    <rect x="255" y="385" width="55" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="263" y="399" fill="#e6edf3">raw</text>
+    
+    <rect x="315" y="385" width="45" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="328" y="399" fill="#e6edf3">0</text>
+    
+    <rect x="365" y="385" width="45" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="378" y="399" fill="#e6edf3">5</text>
+    
+    <rect x="415" y="385" width="55" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="433" y="399" fill="#e6edf3">3</text>
+    
+    <rect x="475" y="385" width="115" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    
+    <rect x="600" y="388" width="14" height="14" rx="2" fill="#00d4aa"/>
+    <text x="604" y="399" fill="#040810" font-size="8">✓</text>
+    
+    <rect x="655" y="388" width="14" height="14" rx="2" fill="#00d4aa"/>
+    <text x="659" y="399" fill="#040810" font-size="8">✓</text>
+    
+    <rect x="725" y="388" width="14" height="14" rx="2" fill="#21262d" stroke="#30363d"/>
+    
+    <!-- Row 4 - Derived -->
+    <rect x="25" y="410" width="75" height="20" rx="2" fill="#21262d" stroke="#f0883e"/>
+    <text x="33" y="424" fill="#f0883e">rb_diff</text>
+    
+    <rect x="105" y="410" width="95" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="113" y="424" fill="#e6edf3">R-B Difference</text>
+    
+    <rect x="205" y="410" width="45" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="218" y="424" fill="#e6edf3">ns</text>
+    
+    <rect x="255" y="410" width="55" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    <text x="263" y="424" fill="#e6edf3">raw</text>
+    
+    <rect x="315" y="410" width="45" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    
+    <rect x="365" y="410" width="45" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    
+    <rect x="415" y="410" width="55" height="20" rx="2" fill="#21262d" stroke="#30363d"/>
+    
+    <rect x="475" y="410" width="115" height="20" rx="2" fill="#21262d" stroke="#f0883e"/>
+    <text x="483" y="424" fill="#f0883e">red_noise - blue_noise</text>
+    
+    <rect x="600" y="413" width="14" height="14" rx="2" fill="#00d4aa"/>
+    <text x="604" y="424" fill="#040810" font-size="8">✓</text>
+    
+    <rect x="655" y="413" width="14" height="14" rx="2" fill="#21262d" stroke="#30363d"/>
+    
+    <rect x="725" y="413" width="14" height="14" rx="2" fill="#21262d" stroke="#30363d"/>
+  </g>
+  
+  <!-- Legend -->
+  <rect x="25" y="460" width="300" height="35" rx="3" fill="#21262d"/>
+  <text x="35" y="480" fill="#8b949e" font-size="9">Derived fields calculate from other fields using expressions</text>
+  <line x1="35" y1="485" x2="55" y2="485" stroke="#f0883e" stroke-width="2"/>
+  <text x="60" y="488" fill="#f0883e" font-size="8">= derived field</text>
+</svg>]]>

@@ -26,13 +26,17 @@ from serial.tools import list_ports
 try:
     from .styles import (
         DARK_ACCENT,
+        DARK_ACCENT_HI,
         DARK_BG,
         DARK_BORDER,
+        DARK_BORDER_HI,
         DARK_MUTED,
         DARK_OK,
         DARK_PANEL,
         DARK_PANEL_2,
+        DARK_PANEL_3,
         DARK_TEXT,
+        DARK_TEXT_SUB,
         LIGHT_BG,
         LIGHT_MUTED,
         LIGHT_OK,
@@ -43,13 +47,17 @@ try:
 except ImportError:
     from styles import (
         DARK_ACCENT,
+        DARK_ACCENT_HI,
         DARK_BG,
         DARK_BORDER,
+        DARK_BORDER_HI,
         DARK_MUTED,
         DARK_OK,
         DARK_PANEL,
         DARK_PANEL_2,
+        DARK_PANEL_3,
         DARK_TEXT,
+        DARK_TEXT_SUB,
         LIGHT_BG,
         LIGHT_MUTED,
         LIGHT_OK,
@@ -57,6 +65,9 @@ except ImportError:
         LIGHT_TEXT,
         apply_theme,
     )
+
+# Canvas background for dark mode plots
+DARK_CANVAS = "#060e18"
 
 SENSOR_TEST_DIR = r"I:\common\products\SensorTests\SBE83"
 WARN_NS = 10.0
@@ -158,7 +169,7 @@ DEFAULT_SAMPLE_SETUP = {
 APP_NAME = "Seabird Sensor Digital Workbench"
 APP_SUBTITLE = "Digital Sensor Workbench"
 APP_TAGLINE = "Serial | Plot | Analyze | Debug"
-APP_VERSION = "v1.3.0"
+APP_VERSION = "v1.4.0"
 APP_AUTHOR = "Justin Klumpp"
 APP_COMPANY = "Seabird Scientific"
 APP_CONTACT_EMAIL = "jklumpp@seabird.com"
@@ -289,6 +300,32 @@ class SBE83GuiApp:
         self.update_status_var = tk.StringVar(value="")
         self._update_check_running = False
         self._update_download_running = False
+
+        # ─── Serial Port Sniffer State ──────────────────────────────────────────
+        self.sniffer_port_var = tk.StringVar(value="")
+        self.sniffer_baud_var = tk.IntVar(value=9600)
+        self.sniffer_running = False
+        self.sniffer_serial = None
+        self.sniffer_thread = None
+        self.sniffer_stop_event = threading.Event()
+        self.sniffer_display_mode_var = tk.StringVar(value="hexdump")
+        self.sniffer_show_timestamp_var = tk.BooleanVar(value=True)
+        self.sniffer_autoscroll_var = tk.BooleanVar(value=True)
+        self.sniffer_buffer = []  # list of (timestamp, bytes, direction)
+        self.sniffer_byte_offset = 0
+        self.sniffer_mirror_mode = False  # True when mirroring an existing connection
+        self.sniffer_mirror_port = None   # Port being mirrored
+        self.sniffer_direction_var = tk.StringVar(value="both")  # "both", "rx", "tx"
+        
+        # com0com Bridge State
+        self.bridge_mode = False
+        self.bridge_real_port_var = tk.StringVar(value="")  # Real device port
+        self.bridge_virtual_port_var = tk.StringVar(value="")  # Virtual port (app connects here)
+        self.bridge_real_serial = None
+        self.bridge_virtual_serial = None
+        self.bridge_thread_rx = None  # Real → Virtual
+        self.bridge_thread_tx = None  # Virtual → Real
+        self.bridge_stop_event = threading.Event()
 
         self._build_ui()
         self._apply_results_root(self.non_debug_results_root, log_change=False)
@@ -516,11 +553,7 @@ class SBE83GuiApp:
                 out["normal_window_geometry"] = self._last_normal_geometry.strip()
         except Exception:
             pass
-        if hasattr(self, "main_split"):
-            try:
-                out["main_split_sash"] = int(self.main_split.sashpos(0))
-            except Exception:
-                pass
+        # plot_split sash position (if it exists)
         if hasattr(self, "plot_split"):
             try:
                 out["plot_split_sash"] = int(self.plot_split.sashpos(0))
@@ -556,36 +589,12 @@ class SBE83GuiApp:
 
     def _set_split_defaults(self):
         profile = self._layout_profile()
-        if hasattr(self, "main_split"):
-            self.root.update_idletasks()
-            try:
-                total_h = int(self.main_split.winfo_height())
-            except Exception:
-                total_h = 0
-            if total_h >= 220:
-                min_notebook_h = max(int(total_h / 3), 320 if profile == "wide" else 280)
-                default_top_h = max(220, int(total_h * (0.30 if profile == "wide" else 0.42)))
-                default_top_h = min(default_top_h, total_h - min_notebook_h)
-                try:
-                    self.main_split.sashpos(0, default_top_h)
-                except Exception:
-                    pass
-        self._enforce_main_notebook_min_height()
+        # No longer has adjustable main split - layout is fixed
         self._adjust_plot_split_height(force=True)
 
     def _main_split_limits(self):
-        if not hasattr(self, "main_split"):
-            return None
-        try:
-            total_h = int(self.main_split.winfo_height())
-        except Exception:
-            return None
-        if total_h < 200:
-            return None
-        min_notebook_h = max(int(total_h / 3), 320 if self._layout_profile() == "wide" else 280)
-        min_top_h = 130
-        max_top_h = max(min_top_h, total_h - min_notebook_h)
-        return (min_top_h, max_top_h)
+        # Deprecated - layout is now fixed
+        return None
 
     def _plot_split_limits(self):
         if not hasattr(self, "plot_split"):
@@ -612,15 +621,7 @@ class SBE83GuiApp:
         if not isinstance(layout, dict):
             return
         self.root.update_idletasks()
-        main_sash = layout.get("main_split_sash")
-        if isinstance(main_sash, int) and hasattr(self, "main_split"):
-            try:
-                limits = self._main_split_limits()
-                if limits is not None:
-                    lo, hi = limits
-                    self.main_split.sashpos(0, max(lo, min(hi, main_sash)))
-            except Exception:
-                pass
+        # Restore active tab
         tab_text = str(layout.get("active_tab_text", "")).strip().lower()
         if tab_text and hasattr(self, "main_notebook"):
             for tab_id in self.main_notebook.tabs():
@@ -644,29 +645,8 @@ class SBE83GuiApp:
         self._schedule_layout_save(delay_ms=800)
 
     def _enforce_main_notebook_min_height(self):
-        if not hasattr(self, "main_split"):
-            return
-        try:
-            total_h = int(self.main_split.winfo_height())
-            pos = int(self.main_split.sashpos(0))
-        except Exception:
-            return
-        if total_h < 200:
-            return
-        min_top_h = 130
-        min_notebook_h = max(int(total_h / 3), 320 if self._layout_profile() == "wide" else 280)
-        max_top_h = max(min_top_h, total_h - min_notebook_h)
-        if pos < min_top_h:
-            try:
-                self.main_split.sashpos(0, min_top_h)
-            except Exception:
-                pass
-            return
-        if pos > max_top_h:
-            try:
-                self.main_split.sashpos(0, max_top_h)
-            except Exception:
-                pass
+        # No longer needed - fixed layout handles this automatically
+        pass
 
     def _adjust_plot_split_height(self, force=False):
         if not hasattr(self, "plot_split"):
@@ -896,26 +876,6 @@ class SBE83GuiApp:
                 self.main_notebook.select(self.test_tab)
             except Exception:
                 pass
-        if not hasattr(self, "main_split"):
-            return
-        self.root.update_idletasks()
-        try:
-            total_h = int(self.main_split.winfo_height())
-        except Exception:
-            return
-        if total_h < 220:
-            return
-        notebook_target_h = max(int(total_h * (0.78 if self._layout_profile() == "wide" else 0.72)), int(total_h / 3), 320)
-        notebook_target_h = min(notebook_target_h, total_h - 140)
-        top_h = total_h - notebook_target_h
-        limits = self._main_split_limits()
-        if limits is not None:
-            lo, hi = limits
-            top_h = max(lo, min(hi, top_h))
-        try:
-            self.main_split.sashpos(0, top_h)
-        except Exception:
-            pass
         self._save_app_config()
 
     def _focus_live_layout(self, update_mode=True):
@@ -927,25 +887,26 @@ class SBE83GuiApp:
                 self.main_notebook.select(self.plot_tab)
             except Exception:
                 pass
-        if hasattr(self, "main_split"):
-            self.root.update_idletasks()
-            try:
-                total_h = int(self.main_split.winfo_height())
-            except Exception:
-                total_h = 0
-            if total_h >= 220:
-                notebook_target_h = max(int(total_h * (0.82 if self._layout_profile() == "wide" else 0.76)), int(total_h / 3), 340)
-                notebook_target_h = min(notebook_target_h, total_h - 130)
-                top_h = total_h - notebook_target_h
-                limits = self._main_split_limits()
-                if limits is not None:
-                    lo, hi = limits
-                    top_h = max(lo, min(hi, top_h))
-                try:
-                    self.main_split.sashpos(0, top_h)
-                except Exception:
-                    pass
         self._save_app_config()
+
+    def _auto_collapse_for_run(self):
+        """Auto-collapse panels when a test run starts to maximize notebook view."""
+        # Store current visibility state for potential restore
+        self._run_collapse_restore_state = {
+            "conn": hasattr(self, "conn_frame") and self.conn_frame.winfo_manager(),
+            "port": not self.port_station_collapsed_var.get(),
+            "setup": bool(getattr(self, "test_setup_visible", True)),
+        }
+        # Collapse connection section
+        if hasattr(self, "conn_frame") and self.conn_frame.winfo_manager():
+            self.conn_frame.pack_forget()
+        # Collapse port station
+        if not self.port_station_collapsed_var.get():
+            self.port_station_collapsed_var.set(True)
+            self._apply_port_station_visibility(persist=False)
+        # Collapse test setup
+        if self.test_setup_visible:
+            self._set_test_setup_visibility(False, auto=True, persist=False)
 
     def _reset_layout(self):
         if getattr(self, "console_detached", False):
@@ -987,25 +948,8 @@ class SBE83GuiApp:
         self._apply_port_station_visibility(persist=True)
 
     def _fit_main_split_to_top_content(self):
-        if not hasattr(self, "main_split") or not hasattr(self, "top_frame"):
-            return
-        self.root.update_idletasks()
-        try:
-            total_h = int(self.main_split.winfo_height())
-            req_top_h = int(self.top_frame.winfo_reqheight()) + 12
-        except Exception:
-            return
-        if total_h < 220:
-            return
-        limits = self._main_split_limits()
-        if limits is None:
-            return
-        lo, hi = limits
-        target = max(lo, min(hi, req_top_h))
-        try:
-            self.main_split.sashpos(0, target)
-        except Exception:
-            pass
+        # No longer needed - fixed layout automatically sizes
+        pass
 
     def _set_test_setup_visibility(self, visible, auto=False, persist=True):
         visible = bool(visible)
@@ -1033,193 +977,211 @@ class SBE83GuiApp:
             self.setup_manual_override = False
         self._set_test_setup_visibility(next_visible, auto=False, persist=True)
 
+    def _toggle_max_view(self):
+        """Toggle maximum view mode - collapses all top panels for more notebook space."""
+        # Check if anything is currently visible
+        conn_visible = hasattr(self, "conn_frame") and self.conn_frame.winfo_manager()
+        port_visible = not self.port_station_collapsed_var.get()
+        setup_visible = bool(getattr(self, "test_setup_visible", True))
+        
+        if conn_visible or port_visible or setup_visible:
+            # Collapse everything
+            self._max_view_restore_state = {
+                "conn": conn_visible,
+                "port": port_visible,
+                "setup": setup_visible,
+            }
+            if hasattr(self, "conn_frame"):
+                self.conn_frame.pack_forget()
+            if not self.port_station_collapsed_var.get():
+                self.port_station_collapsed_var.set(True)
+                self._apply_port_station_visibility(persist=False)
+            if self.test_setup_visible:
+                self._set_test_setup_visibility(False, auto=False, persist=False)
+        else:
+            # Restore previous state - must restore in correct pack order
+            restore = getattr(self, "_max_view_restore_state", {"conn": True, "port": False, "setup": True})
+            # Repack in order: conn -> port_station -> setup -> actions
+            if restore.get("conn", True) and hasattr(self, "conn_frame"):
+                # Pack at start of top_frame
+                for child in self.top_frame.pack_slaves():
+                    child.pack_forget()
+                self.conn_frame.pack(fill=tk.X, pady=(0, 6))
+                # Repack port station if needed
+                if restore.get("port", False):
+                    self.port_station_collapsed_var.set(False)
+                if hasattr(self, "port_station_frame"):
+                    if not self.port_station_collapsed_var.get():
+                        self.port_station_frame.pack(fill=tk.X, pady=2)
+                # Repack setup if needed
+                if restore.get("setup", True):
+                    self.setup_frame.pack(fill=tk.X, pady=4)
+                    self.test_setup_visible = True
+                # Always repack actions
+                self.actions_frame.pack(fill=tk.X, pady=(6, 0))
+            else:
+                # Just restore port and setup without conn
+                if restore.get("port", False):
+                    self.port_station_collapsed_var.set(False)
+                    self._apply_port_station_visibility(persist=False)
+                if restore.get("setup", True):
+                    self._set_test_setup_visibility(True, auto=False, persist=False)
+        self._save_app_config()
+
     def _build_ui(self):
-        self.root.minsize(860, 540)
+        self.root.minsize(900, 580)
+        
+        # ═══════════════════════════════════════════════════════════════════════
+        # HERO HEADER — Modern app bar with gradient-like styling
+        # ═══════════════════════════════════════════════════════════════════════
         self.hero_frame = tk.Frame(self.root, bg=DARK_PANEL_2, highlightthickness=1, highlightbackground=DARK_BORDER)
-        self.hero_frame.pack(fill=tk.X, padx=8, pady=(8, 0))
+        self.hero_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
+        
+        # Left side: App branding
+        hero_left = tk.Frame(self.hero_frame, bg=DARK_PANEL_2)
+        hero_left.pack(side=tk.LEFT, padx=(8, 0))
+        
         self.hero_title_label = tk.Label(
-            self.hero_frame,
+            hero_left,
             text=APP_NAME,
             bg=DARK_PANEL_2,
             fg=DARK_TEXT,
-            font=("Segoe UI Semibold", 15),
-            padx=12,
-            pady=8,
+            font=("Segoe UI Variable Display", 14, "bold"),
+            padx=0,
+            pady=10,
         )
         self.hero_title_label.pack(side=tk.LEFT)
+        
+        self.hero_version_label = tk.Label(
+            hero_left,
+            text=APP_VERSION,
+            bg=DARK_PANEL_2,
+            fg=DARK_ACCENT,
+            font=("Segoe UI Variable", 10, "bold"),
+            padx=8,
+        )
+        self.hero_version_label.pack(side=tk.LEFT, pady=(2, 0))
+        
+        # Right side: Navigation links
         self.hero_right = tk.Frame(self.hero_frame, bg=DARK_PANEL_2)
-        self.hero_right.pack(side=tk.RIGHT, padx=12)
+        self.hero_right.pack(side=tk.RIGHT, padx=12, pady=6)
+        
         self.hero_right_top = tk.Frame(self.hero_right, bg=DARK_PANEL_2)
         self.hero_right_top.pack(anchor="e")
-        self.hero_help_link = tk.Label(
-            self.hero_right_top,
-            text="Help",
+        
+        # Nav links with modern styling and separators
+        nav_links = [
+            ("◉ Live", self._focus_live_layout, "hero_live_link"),
+            ("◫ Results", self._focus_results_layout, "hero_results_link"),
+            ("⚙ Config", self._toggle_config_mode, "hero_config_link"),
+            ("↻ Reset", self._reset_layout, "hero_reset_link"),
+            ("⇣ Update", lambda: self.check_for_updates(manual=True), "hero_update_link"),
+            ("? Help", self.open_readme_help, "hero_help_link"),
+            ("ⓘ About", self.open_about_dialog, "hero_about_link"),
+        ]
+        
+        for i, (text, command, attr_name) in enumerate(nav_links):
+            if i > 0:
+                sep = tk.Label(self.hero_right_top, text="│", bg=DARK_PANEL_2, fg=DARK_BORDER, font=("Segoe UI", 9))
+                sep.pack(side=tk.LEFT, padx=(6, 6))
+            
+            link = tk.Label(
+                self.hero_right_top,
+                text=text,
+                bg=DARK_PANEL_2,
+                fg=DARK_TEXT_SUB,
+                font=("Segoe UI Variable", 9),
+                cursor="hand2",
+            )
+            link.pack(side=tk.LEFT)
+            link.bind("<Button-1>", lambda _e, cmd=command: cmd())
+            link.bind("<Enter>", lambda _e, w=link: self._on_header_link_enter(w))
+            link.bind("<Leave>", lambda _e, w=link: self._on_header_link_leave(w))
+            setattr(self, attr_name, link)
+        
+        # Tagline below nav
+        self.hero_tagline_label = tk.Label(
+            self.hero_right,
+            text=APP_TAGLINE,
             bg=DARK_PANEL_2,
             fg=DARK_MUTED,
-            font=("Segoe UI Semibold", 11),
-            cursor="hand2",
-            padx=0,
-            pady=0,
+            font=("Segoe UI Variable", 9),
         )
-        self.hero_help_link.pack(side=tk.LEFT, padx=(0, 12))
-        self.hero_help_link.bind("<Button-1>", lambda _e: self.open_readme_help())
-        self.hero_help_link.bind("<Enter>", lambda _e, w=self.hero_help_link: self._on_header_link_enter(w))
-        self.hero_help_link.bind("<Leave>", lambda _e, w=self.hero_help_link: self._on_header_link_leave(w))
-        self.hero_about_link = tk.Label(
-            self.hero_right_top,
-            text="About",
-            bg=DARK_PANEL_2,
-            fg=DARK_MUTED,
-            font=("Segoe UI Semibold", 11),
-            cursor="hand2",
-            padx=0,
-            pady=0,
-        )
-        self.hero_about_link.pack(side=tk.LEFT, padx=(0, 12))
-        self.hero_about_link.bind("<Button-1>", lambda _e: self.open_about_dialog())
-        self.hero_about_link.bind("<Enter>", lambda _e, w=self.hero_about_link: self._on_header_link_enter(w))
-        self.hero_about_link.bind("<Leave>", lambda _e, w=self.hero_about_link: self._on_header_link_leave(w))
-        self.hero_update_link = tk.Label(
-            self.hero_right_top,
-            text="Update",
-            bg=DARK_PANEL_2,
-            fg=DARK_MUTED,
-            font=("Segoe UI", 10),
-            cursor="hand2",
-            padx=0,
-            pady=0,
-        )
-        self.hero_update_link.pack(side=tk.LEFT, padx=(0, 10))
-        self.hero_update_link.bind("<Button-1>", lambda _e: self.check_for_updates(manual=True))
-        self.hero_update_link.bind("<Enter>", lambda _e, w=self.hero_update_link: self._on_header_link_enter(w))
-        self.hero_update_link.bind("<Leave>", lambda _e, w=self.hero_update_link: self._on_header_link_leave(w))
-        self.hero_results_link = tk.Label(
-            self.hero_right_top,
-            text="Results",
-            bg=DARK_PANEL_2,
-            fg=DARK_MUTED,
-            font=("Segoe UI", 10),
-            cursor="hand2",
-            padx=0,
-            pady=0,
-        )
-        self.hero_results_link.pack(side=tk.LEFT, padx=(0, 10))
-        self.hero_results_link.bind("<Button-1>", lambda _e: self._focus_results_layout())
-        self.hero_results_link.bind("<Enter>", lambda _e, w=self.hero_results_link: self._on_header_link_enter(w))
-        self.hero_results_link.bind("<Leave>", lambda _e, w=self.hero_results_link: self._on_header_link_leave(w))
-        self.hero_live_link = tk.Label(
-            self.hero_right_top,
-            text="Live",
-            bg=DARK_PANEL_2,
-            fg=DARK_MUTED,
-            font=("Segoe UI", 10),
-            cursor="hand2",
-            padx=0,
-            pady=0,
-        )
-        self.hero_live_link.pack(side=tk.LEFT, padx=(0, 10))
-        self.hero_live_link.bind("<Button-1>", lambda _e: self._focus_live_layout())
-        self.hero_live_link.bind("<Enter>", lambda _e, w=self.hero_live_link: self._on_header_link_enter(w))
-        self.hero_live_link.bind("<Leave>", lambda _e, w=self.hero_live_link: self._on_header_link_leave(w))
-        self.hero_config_link = tk.Label(
-            self.hero_right_top,
-            text="Config",
-            bg=DARK_PANEL_2,
-            fg=DARK_MUTED,
-            font=("Segoe UI", 10),
-            cursor="hand2",
-            padx=0,
-            pady=0,
-        )
-        self.hero_config_link.pack(side=tk.LEFT, padx=(0, 10))
-        self.hero_config_link.bind("<Button-1>", lambda _e: self._toggle_config_mode())
-        self.hero_config_link.bind("<Enter>", lambda _e, w=self.hero_config_link: self._on_header_link_enter(w))
-        self.hero_config_link.bind("<Leave>", lambda _e, w=self.hero_config_link: self._on_header_link_leave(w))
-        self.hero_reset_link = tk.Label(
-            self.hero_right_top,
-            text="Reset",
-            bg=DARK_PANEL_2,
-            fg=DARK_MUTED,
-            font=("Segoe UI", 10),
-            cursor="hand2",
-            padx=0,
-            pady=0,
-        )
-        self.hero_reset_link.pack(side=tk.LEFT, padx=(0, 12))
-        self.hero_reset_link.bind("<Button-1>", lambda _e: self._reset_layout())
-        self.hero_reset_link.bind("<Enter>", lambda _e, w=self.hero_reset_link: self._on_header_link_enter(w))
-        self.hero_reset_link.bind("<Leave>", lambda _e, w=self.hero_reset_link: self._on_header_link_leave(w))
-        self.hero_version_label = tk.Label(
-            self.hero_right_top, text=APP_VERSION, bg=DARK_PANEL_2, fg=DARK_ACCENT, font=("Segoe UI Semibold", 11)
-        )
-        self.hero_version_label.pack(side=tk.LEFT)
-        self.hero_tagline_label = tk.Label(self.hero_right, text=APP_TAGLINE, bg=DARK_PANEL_2, fg=DARK_MUTED, font=("Segoe UI", 10))
-        self.hero_tagline_label.pack(anchor="e")
+        self.hero_tagline_label.pack(anchor="e", pady=(2, 0))
 
-        self.main_split = ttk.PanedWindow(self.root, orient=tk.VERTICAL)
-        self.main_split.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        # ═══════════════════════════════════════════════════════════════════════
+        # MAIN LAYOUT — Fixed container with top controls and bottom notebook
+        # ═══════════════════════════════════════════════════════════════════════
+        self.main_container = ttk.Frame(self.root)
+        self.main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(6, 10))
 
-        self.top_frame = ttk.Frame(self.main_split, padding=8)
+        self.top_frame = ttk.Frame(self.main_container, padding=6)
 
-        conn = ttk.LabelFrame(self.top_frame, text="Connection (up to 10 COM ports)", padding=8)
-        conn.pack(fill=tk.X, pady=4)
-        conn.grid_columnconfigure(0, weight=1)
+        # ─── Connection Section ─────────────────────────────────────────────────
+        self.conn_frame = ttk.LabelFrame(self.top_frame, text="⚡ Connection", padding=10)
+        self.conn_frame.pack(fill=tk.X, pady=(0, 6))
+        self.conn_frame.grid_columnconfigure(0, weight=1)
+        conn = self.conn_frame  # alias for shorter code below
 
         conn_inputs = ttk.Frame(conn)
         conn_inputs.grid(row=0, column=0, sticky="ew")
         conn_inputs.grid_columnconfigure(1, weight=1)
         conn_inputs.grid_columnconfigure(3, weight=1)
         conn_inputs.grid_columnconfigure(4, weight=0)
-        ttk.Label(conn_inputs, text="Selected COM Port").grid(row=0, column=0, sticky="e", padx=(0, 6), pady=(0, 6))
+        ttk.Label(conn_inputs, text="COM Port").grid(row=0, column=0, sticky="e", padx=(0, 8), pady=(0, 6))
         self.com_var = tk.StringVar(value="COM5")
         self.com_combo = ttk.Combobox(conn_inputs, textvariable=self.com_var, width=14, state="readonly")
         self.com_combo.grid(row=0, column=1, sticky="ew", pady=(0, 6))
-        ttk.Label(conn_inputs, text="Baud").grid(row=0, column=2, sticky="e", padx=(14, 6), pady=(0, 6))
+        ttk.Label(conn_inputs, text="Baud Rate").grid(row=0, column=2, sticky="e", padx=(16, 8), pady=(0, 6))
         self.baud_combo = ttk.Combobox(conn_inputs, textvariable=self.baudrate_var, width=10, state="readonly", values=BAUD_OPTIONS)
         self.baud_combo.grid(row=0, column=3, sticky="ew", pady=(0, 6))
-        ttk.Button(conn_inputs, text="Refresh Ports", command=self.refresh_ports).grid(row=0, column=4, sticky="ew", padx=(14, 0), pady=(0, 6))
+        ttk.Button(conn_inputs, text="↻ Refresh", command=self.refresh_ports, style="Toolbar.TButton").grid(row=0, column=4, sticky="ew", padx=(16, 0), pady=(0, 6))
 
+        # Connection action buttons - grouped logically
         conn_actions = ttk.Frame(conn)
-        conn_actions.grid(row=1, column=0, sticky="ew")
+        conn_actions.grid(row=1, column=0, sticky="ew", pady=(4, 0))
         for col in range(6):
             conn_actions.grid_columnconfigure(col, weight=1)
-        ttk.Button(conn_actions, text="Connect Selected", command=self.connect_selected_port).grid(
+        ttk.Button(conn_actions, text="▶ Connect", command=self.connect_selected_port, style="Primary.TButton").grid(
             row=0, column=0, padx=2, sticky="ew"
         )
-        ttk.Button(conn_actions, text="Reconnect @ Baud", command=self.reconnect_selected_port).grid(
+        ttk.Button(conn_actions, text="↻ Reconnect", command=self.reconnect_selected_port, style="Secondary.TButton").grid(
             row=0, column=1, padx=2, sticky="ew"
         )
-        ttk.Button(conn_actions, text="Disconnect Selected", command=self.disconnect_selected_port).grid(
+        ttk.Button(conn_actions, text="◼ Disconnect", command=self.disconnect_selected_port, style="Secondary.TButton").grid(
             row=0, column=2, padx=2, sticky="ew"
         )
-        ttk.Button(conn_actions, text="Connect All", command=self.connect_all_ports).grid(
+        ttk.Button(conn_actions, text="▶ All", command=self.connect_all_ports, style="Success.TButton").grid(
             row=0, column=3, padx=2, sticky="ew"
         )
-        ttk.Button(conn_actions, text="Disconnect All", command=self.disconnect_all_ports).grid(
+        ttk.Button(conn_actions, text="◼ All", command=self.disconnect_all_ports, style="Danger.TButton").grid(
             row=0, column=4, padx=2, sticky="ew"
         )
         self.port_station_toggle_btn = ttk.Button(
-            conn_actions, text="Hide Port Station", command=self._toggle_port_station_visibility
+            conn_actions, text="≡ Ports", command=self._toggle_port_station_visibility, style="Toolbar.TButton"
         )
         self.port_station_toggle_btn.grid(row=0, column=5, padx=2, sticky="ew")
 
+        # Connection status bar
         conn_status_row = ttk.Frame(conn)
         conn_status_row.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         conn_status_row.grid_columnconfigure(1, weight=1)
-        self.conn_status = tk.StringVar(value="Connected ports: 0")
+        self.conn_status = tk.StringVar(value="● 0 connected")
         self.conn_status_label = ttk.Label(conn_status_row, textvariable=self.conn_status, style="Muted.TLabel")
         self.conn_status_label.grid(row=0, column=0, sticky="w")
         self.connected_ports_var = tk.StringVar(value="None")
-        ttk.Label(conn_status_row, text="Connected list:", style="Muted.TLabel").grid(row=0, column=1, sticky="e", padx=(12, 6))
+        ttk.Label(conn_status_row, text="Active:", style="Small.TLabel").grid(row=0, column=1, sticky="e", padx=(12, 6))
         self.connected_ports_label = ttk.Label(conn_status_row, textvariable=self.connected_ports_var, style="OK.TLabel")
         self.connected_ports_label.grid(row=0, column=2, sticky="w")
 
-        self.port_station_frame = ttk.LabelFrame(self.top_frame, text="Port Station View (10 slots)", padding=4)
-        self.port_station_frame.pack(fill=tk.X, pady=2)
+        # ─── Port Station Grid ──────────────────────────────────────────────────
+        self.port_station_frame = ttk.LabelFrame(self.top_frame, text="◫ Port Station (10 slots)", padding=6)
+        self.port_station_frame.pack(fill=tk.X, pady=(0, 6))
         self._build_port_grid(self.port_station_frame)
 
-        self.setup_frame = ttk.LabelFrame(self.top_frame, text="Test Setup", padding=8)
-        self.setup_frame.pack(fill=tk.X, pady=4)
+        # ─── Test Setup Section ─────────────────────────────────────────────────
+        self.setup_frame = ttk.LabelFrame(self.top_frame, text="⚗ Test Setup", padding=10)
+        self.setup_frame.pack(fill=tk.X, pady=(0, 6))
 
         self.operator_var = tk.StringVar(value=DEFAULT_OPERATOR)
         self.notes_var = tk.StringVar()
@@ -1233,25 +1195,25 @@ class SBE83GuiApp:
 
         for col in (1, 3, 5):
             self.setup_frame.grid_columnconfigure(col, weight=1)
-        ttk.Label(self.setup_frame, text="Operator").grid(row=0, column=0, sticky="e", padx=(0, 6), pady=(0, 6))
-        ttk.Entry(self.setup_frame, textvariable=self.operator_var, width=20, state="readonly").grid(row=0, column=1, padx=(0, 12), pady=(0, 6), sticky="ew")
-        ttk.Label(self.setup_frame, text="Bath ID").grid(row=0, column=2, sticky="e", padx=(0, 6), pady=(0, 6))
-        ttk.Entry(self.setup_frame, textvariable=self.bath_id_var, width=18).grid(row=0, column=3, padx=(0, 12), pady=(0, 6), sticky="ew")
-        ttk.Label(self.setup_frame, text="Notes").grid(row=0, column=4, sticky="e", padx=(0, 6), pady=(0, 6))
+        ttk.Label(self.setup_frame, text="Operator").grid(row=0, column=0, sticky="e", padx=(0, 8), pady=(0, 6))
+        ttk.Entry(self.setup_frame, textvariable=self.operator_var, width=20, state="readonly").grid(row=0, column=1, padx=(0, 16), pady=(0, 6), sticky="ew")
+        ttk.Label(self.setup_frame, text="Bath ID").grid(row=0, column=2, sticky="e", padx=(0, 8), pady=(0, 6))
+        ttk.Entry(self.setup_frame, textvariable=self.bath_id_var, width=18).grid(row=0, column=3, padx=(0, 16), pady=(0, 6), sticky="ew")
+        ttk.Label(self.setup_frame, text="Notes").grid(row=0, column=4, sticky="e", padx=(0, 8), pady=(0, 6))
         ttk.Entry(self.setup_frame, textvariable=self.notes_var, width=28).grid(row=0, column=5, pady=(0, 6), sticky="ew")
 
-        ttk.Label(self.setup_frame, text="Bath Temp (C)").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=(0, 6))
-        ttk.Entry(self.setup_frame, textvariable=self.bath_temp_c_var, width=20).grid(row=1, column=1, padx=(0, 12), pady=(0, 6), sticky="ew")
-        ttk.Label(self.setup_frame, text="Salinity (PSU)").grid(row=1, column=2, sticky="e", padx=(0, 6), pady=(0, 6))
-        ttk.Entry(self.setup_frame, textvariable=self.salinity_psu_var, width=20, state="readonly").grid(row=1, column=3, padx=(0, 12), pady=(0, 6), sticky="ew")
-        ttk.Label(self.setup_frame, text="Samples").grid(row=1, column=4, sticky="e", padx=(0, 6), pady=(0, 6))
+        ttk.Label(self.setup_frame, text="Bath Temp (°C)").grid(row=1, column=0, sticky="e", padx=(0, 8), pady=(0, 6))
+        ttk.Entry(self.setup_frame, textvariable=self.bath_temp_c_var, width=20).grid(row=1, column=1, padx=(0, 16), pady=(0, 6), sticky="ew")
+        ttk.Label(self.setup_frame, text="Salinity (PSU)").grid(row=1, column=2, sticky="e", padx=(0, 8), pady=(0, 6))
+        ttk.Entry(self.setup_frame, textvariable=self.salinity_psu_var, width=20, state="readonly").grid(row=1, column=3, padx=(0, 16), pady=(0, 6), sticky="ew")
+        ttk.Label(self.setup_frame, text="Samples").grid(row=1, column=4, sticky="e", padx=(0, 8), pady=(0, 6))
         ttk.Spinbox(self.setup_frame, from_=20, to=500, textvariable=self.sample_count_var, width=8).grid(row=1, column=5, pady=(0, 6), sticky="ew")
-        ttk.Label(self.setup_frame, text="Results Root").grid(row=2, column=0, sticky="e", padx=(0, 6), pady=(2, 0))
+        ttk.Label(self.setup_frame, text="Results Root").grid(row=2, column=0, sticky="e", padx=(0, 8), pady=(2, 0))
         self.results_root_entry = ttk.Entry(self.setup_frame, textvariable=self.results_root_var, width=78, state="readonly")
         self.results_root_entry.grid(
-            row=2, column=1, columnspan=4, padx=(0, 12), sticky="ew", pady=(2, 0)
+            row=2, column=1, columnspan=4, padx=(0, 16), sticky="ew", pady=(2, 0)
         )
-        self.results_root_browse_btn = ttk.Button(self.setup_frame, text="Browse", command=self.browse_results_root)
+        self.results_root_browse_btn = ttk.Button(self.setup_frame, text="📁 Browse", command=self.browse_results_root, style="Toolbar.TButton")
         self.results_root_browse_btn.grid(
             row=2, column=5, sticky="ew", pady=(2, 0)
         )
@@ -1267,108 +1229,134 @@ class SBE83GuiApp:
             var.trace_add("write", self._on_setup_field_changed)
         self._apply_port_station_visibility(persist=False)
 
-        self.actions_frame = ttk.LabelFrame(self.top_frame, text="Actions", padding=8)
-        self.actions_frame.pack(fill=tk.X, pady=4)
+        # ─── Actions Toolbar ────────────────────────────────────────────────────
+        self.actions_frame = ttk.LabelFrame(self.top_frame, text="▶ Actions", padding=10)
+        self.actions_frame.pack(fill=tk.X, pady=(0, 4))
         self.actions_frame.grid_columnconfigure(0, weight=1)
-        action_buttons = ttk.Frame(self.actions_frame)
-        action_buttons.grid(row=0, column=0, sticky="ew")
-        for col in range(11):
-            action_buttons.grid_columnconfigure(col, weight=1)
-
+        
+        # Primary action row - grouped by function
+        action_row1 = ttk.Frame(self.actions_frame)
+        action_row1.grid(row=0, column=0, sticky="ew")
+        
+        # Test controls group
+        test_grp = ttk.Frame(action_row1)
+        test_grp.pack(side=tk.LEFT, padx=(0, 16))
         self.run_btn = ttk.Button(
-            action_buttons, text="Run Test", command=self.run_unit_test, state=tk.DISABLED, style="Primary.TButton"
+            test_grp, text="▶ Run Test", command=self.run_unit_test, state=tk.DISABLED, style="Primary.TButton"
         )
-        self.run_btn.grid(row=0, column=0, padx=2, sticky="ew")
-        ttk.Button(action_buttons, text="Save JSON", command=self.save_session_json).grid(
-            row=0, column=1, padx=2, sticky="ew"
-        )
-        ttk.Button(action_buttons, text="Reset", command=self.reset_session).grid(
-            row=0, column=2, padx=2, sticky="ew"
-        )
-        ttk.Button(action_buttons, text="Live Plot", command=self.show_plot_tab).grid(
-            row=0, column=3, padx=2, sticky="ew"
-        )
-        ttk.Button(action_buttons, text="Console", command=self.show_console_tab).grid(
-            row=0, column=4, padx=2, sticky="ew"
-        )
-        self.detach_console_btn = ttk.Button(action_buttons, text="Detach", command=self.detach_console_window)
-        self.detach_console_btn.grid(row=0, column=5, padx=2, sticky="ew")
-        ttk.Button(action_buttons, text="Session Plot", command=self.plot_current_session).grid(
-            row=0, column=6, padx=2, sticky="ew"
-        )
-        ttk.Button(action_buttons, text="Load Session", command=self.load_session_plot).grid(
-            row=0, column=7, padx=2, sticky="ew"
-        )
-        ttk.Button(action_buttons, text="Reload JSON", command=self.reload_current_session_plot).grid(
-            row=0, column=8, padx=2, sticky="ew"
-        )
-        ttk.Button(action_buttons, text="CSV Column", command=self.toggle_csv_column).grid(
-            row=0, column=9, padx=2, sticky="ew"
-        )
-        ttk.Button(action_buttons, text="Check Update", command=lambda: self.check_for_updates(manual=True)).grid(
-            row=0, column=10, padx=2, sticky="ew"
-        )
+        self.run_btn.pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(test_grp, text="Reset", command=self.reset_session, style="Secondary.TButton").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(test_grp, text="Save", command=self.save_session_json, style="Secondary.TButton").pack(side=tk.LEFT)
+        
+        # View controls group
+        view_grp = ttk.Frame(action_row1)
+        view_grp.pack(side=tk.LEFT, padx=(0, 16))
+        ttk.Button(view_grp, text="Live", command=self.show_plot_tab, style="Secondary.TButton").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(view_grp, text="Console", command=self.show_console_tab, style="Secondary.TButton").pack(side=tk.LEFT, padx=(0, 4))
+        self.detach_console_btn = ttk.Button(view_grp, text="Detach", command=self.detach_console_window, style="Toolbar.TButton")
+        self.detach_console_btn.pack(side=tk.LEFT)
+        
+        # Session controls group
+        session_grp = ttk.Frame(action_row1)
+        session_grp.pack(side=tk.LEFT, padx=(0, 16))
+        ttk.Button(session_grp, text="Plot", command=self.plot_current_session, style="Secondary.TButton").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(session_grp, text="Load", command=self.load_session_plot, style="Secondary.TButton").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(session_grp, text="Reload", command=self.reload_current_session_plot, style="Toolbar.TButton").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(session_grp, text="CSV Col", command=self.toggle_csv_column, style="Toolbar.TButton").pack(side=tk.LEFT)
+        
+        # Maximize view button - collapses all panels for more notebook space
+        ttk.Button(action_row1, text="□ Max View", command=self._toggle_max_view, style="Toolbar.TButton").pack(side=tk.RIGHT)
 
+        # ─── Action Status Row ──────────────────────────────────────────────────
         action_status = ttk.Frame(self.actions_frame)
-        action_status.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        action_status.grid_columnconfigure(10, weight=1)
-        ttk.Label(action_status, text="Runs").grid(row=0, column=0, sticky="e")
-        ttk.Spinbox(action_status, from_=1, to=50, textvariable=self.batch_run_count_var, width=6).grid(row=0, column=1, padx=(4, 16), sticky="w")
-        ttk.Label(action_status, text="Delay (s)").grid(row=0, column=2, sticky="e")
-        ttk.Spinbox(action_status, from_=0, to=300, increment=1, textvariable=self.batch_delay_s_var, width=6).grid(row=0, column=3, padx=(4, 16), sticky="w")
-        ttk.Checkbutton(action_status, text="Dark Mode", variable=self.dark_mode_var, command=self._on_toggle_dark_mode).grid(row=0, column=4, padx=(0, 16), sticky="w")
-        ttk.Label(action_status, text="Mode").grid(row=0, column=5, sticky="e")
+        action_status.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        
+        # Run settings
+        run_settings = ttk.Frame(action_status)
+        run_settings.pack(side=tk.LEFT, padx=(0, 20))
+        ttk.Label(run_settings, text="Runs:", style="Small.TLabel").pack(side=tk.LEFT)
+        ttk.Spinbox(run_settings, from_=1, to=50, textvariable=self.batch_run_count_var, width=5).pack(side=tk.LEFT, padx=(4, 12))
+        ttk.Label(run_settings, text="Delay:", style="Small.TLabel").pack(side=tk.LEFT)
+        ttk.Spinbox(run_settings, from_=0, to=300, increment=1, textvariable=self.batch_delay_s_var, width=5).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Label(run_settings, text="s", style="Small.TLabel").pack(side=tk.LEFT)
+        
+        # Mode toggle
+        mode_frame = ttk.Frame(action_status)
+        mode_frame.pack(side=tk.LEFT, padx=(0, 20))
+        ttk.Checkbutton(mode_frame, text="🌙 Dark", variable=self.dark_mode_var, command=self._on_toggle_dark_mode).pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Label(mode_frame, text="Mode:", style="Small.TLabel").pack(side=tk.LEFT)
         ttk.Radiobutton(
-            action_status,
-            text="Production",
+            mode_frame,
+            text="Prod",
             variable=self.mode_choice_var,
             value="production",
             command=self._on_mode_choice_changed,
-        ).grid(row=0, column=6, padx=(4, 8), sticky="w")
+        ).pack(side=tk.LEFT, padx=(4, 0))
         ttk.Radiobutton(
-            action_status,
+            mode_frame,
             text="Debug",
             variable=self.mode_choice_var,
             value="debug",
             command=self._on_mode_choice_changed,
-        ).grid(row=0, column=7, padx=(0, 16), sticky="w")
+        ).pack(side=tk.LEFT, padx=(4, 0))
 
-        self.limit_var = tk.StringVar(value=f"Units tested: 0 / {MAX_UNITS_PER_SESSION}")
-        ttk.Label(action_status, textvariable=self.limit_var, style="Accent.TLabel").grid(row=0, column=8, sticky="w")
-        ttk.Label(action_status, textvariable=self.runs_left_var, style="Muted.TLabel").grid(row=0, column=9, padx=(16, 0), sticky="w")
-        self.setup_toggle_btn = ttk.Button(action_status, text="Hide Test Setup", command=self._toggle_test_setup_visibility)
-        self.setup_toggle_btn.grid(row=0, column=10, padx=(16, 0), sticky="e")
-        self.mode_status_entry = ttk.Entry(action_status, textvariable=self.mode_status_var, state="readonly")
-        self.mode_status_entry.grid(row=1, column=0, columnspan=11, pady=(8, 0), sticky="ew")
+        # Status indicators
+        self.limit_var = tk.StringVar(value=f"● 0/{MAX_UNITS_PER_SESSION} units")
+        ttk.Label(action_status, textvariable=self.limit_var, style="Accent.TLabel").pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Label(action_status, textvariable=self.runs_left_var, style="Muted.TLabel").pack(side=tk.LEFT, padx=(0, 12))
+        
+        # Right-aligned controls
+        self.setup_toggle_btn = ttk.Button(action_status, text="≡ Setup", command=self._toggle_test_setup_visibility, style="Toolbar.TButton")
+        self.setup_toggle_btn.pack(side=tk.RIGHT)
+        
+        # Status bar row
+        status_bar = ttk.Frame(self.actions_frame)
+        status_bar.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        status_bar.grid_columnconfigure(1, weight=1)
+        
+        self.mode_status_entry = ttk.Entry(status_bar, textvariable=self.mode_status_var, state="readonly")
+        self.mode_status_entry.grid(row=0, column=0, columnspan=2, sticky="ew")
+        
+        # Update controls row
+        update_row = ttk.Frame(self.actions_frame)
+        update_row.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        update_row.grid_columnconfigure(1, weight=1)
+        
         ttk.Checkbutton(
-            action_status,
-            text="Auto Check Updates",
+            update_row,
+            text="Auto-update",
             variable=self.auto_check_updates_var,
             command=self._on_auto_check_updates_toggle,
-        ).grid(row=2, column=0, columnspan=2, pady=(8, 0), sticky="w")
-        ttk.Button(action_status, text="Update Feed URL", command=self.prompt_update_manifest_url).grid(
-            row=2, column=10, padx=(12, 0), pady=(8, 0), sticky="e"
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(update_row, textvariable=self.update_status_var, style="Muted.TLabel").grid(
+            row=0, column=1, padx=(12, 0), sticky="w"
         )
-        ttk.Label(action_status, textvariable=self.update_status_var, style="Muted.TLabel").grid(
-            row=2, column=2, columnspan=7, padx=(10, 0), pady=(8, 0), sticky="w"
+        ttk.Button(update_row, text="⚙ Feed URL", command=self.prompt_update_manifest_url, style="Toolbar.TButton").grid(
+            row=0, column=2, sticky="e"
         )
 
-        self.main_notebook = ttk.Notebook(self.main_split)
-        self.main_split.add(self.top_frame, weight=0)
-        self.main_split.add(self.main_notebook, weight=1)
+        # ═══════════════════════════════════════════════════════════════════════
+        # MAIN NOTEBOOK — Tabbed content area
+        # ═══════════════════════════════════════════════════════════════════════
+        self.main_notebook = ttk.Notebook(self.main_container)
+        self.top_frame.pack(fill=tk.X, expand=False)
+        self.main_notebook.pack(fill=tk.BOTH, expand=True)
 
-        self.test_tab = ttk.Frame(self.main_notebook, padding=8)
-        self.plot_tab = ttk.Frame(self.main_notebook, padding=8)
-        self.sample_setup_tab = ttk.Frame(self.main_notebook, padding=8)
-        self.log_tab = ttk.Frame(self.main_notebook, padding=8)
-        self.debug_tab = tk.Frame(self.main_notebook, padx=8, pady=8)
+        self.test_tab = ttk.Frame(self.main_notebook, padding=10)
+        self.plot_tab = ttk.Frame(self.main_notebook, padding=10)
+        self.sample_setup_tab = ttk.Frame(self.main_notebook, padding=10)
+        self.log_tab = ttk.Frame(self.main_notebook, padding=10)
+        self.debug_tab = tk.Frame(self.main_notebook, padx=10, pady=10)
+        self.sniffer_tab = ttk.Frame(self.main_notebook, padding=10)
 
-        self.main_notebook.add(self.test_tab, text="Test Results")
-        self.main_notebook.add(self.plot_tab, text="Live Plot")
-        self.main_notebook.add(self.debug_tab, text="Serial Consoles")
-        self.main_notebook.add(self.log_tab, text="Run Log")
-        self.main_notebook.add(self.sample_setup_tab, text="Sample Setup")
+        self.main_notebook.add(self.test_tab, text="  📋 Results  ")
+        self.main_notebook.add(self.plot_tab, text="  📈 Live  ")
+        self.main_notebook.add(self.debug_tab, text="  ⌨ Console  ")
+        self.main_notebook.add(self.sniffer_tab, text="  🔍 Sniffer  ")
+        self.main_notebook.add(self.log_tab, text="  📜 Log  ")
+        self.main_notebook.add(self.sample_setup_tab, text="  ⚙ Setup  ")
 
+        # ─── Test Results Tab ───────────────────────────────────────────────────
         mid = ttk.Frame(self.test_tab)
         mid.pack(fill=tk.BOTH, expand=True)
 
@@ -1398,13 +1386,13 @@ class SBE83GuiApp:
         tree_scroll_x = ttk.Scrollbar(mid, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=tree_scroll_y.set, xscrollcommand=tree_scroll_x.set)
         for c, w in [
-            ("timestamp", 145),
-            ("port", 75),
-            ("serial", 75),
-            ("red_ns", 75),
+            ("timestamp", 150),
+            ("port", 80),
+            ("serial", 80),
+            ("red_ns", 80),
             ("red_v_std", 90),
             ("red_v_avg", 90),
-            ("blue_ns", 75),
+            ("blue_ns", 80),
             ("blue_v_std", 90),
             ("blue_v_avg", 90),
             ("red_pll_v_std", 105),
@@ -1413,12 +1401,12 @@ class SBE83GuiApp:
             ("blue_pll_v_avg", 105),
             ("raw_temp_v_std", 115),
             ("raw_temp_v_avg", 115),
-            ("elec_temp_v_std", 118),
-            ("elec_temp_v_avg", 118),
+            ("elec_temp_v_std", 120),
+            ("elec_temp_v_avg", 120),
             ("flags", 220),
             ("sample_csv", 390),
         ]:
-            self.tree.heading(c, text=c, command=lambda col=c: self.sort_tree_by_column(col))
+            self.tree.heading(c, text=c.replace("_", " ").title(), command=lambda col=c: self.sort_tree_by_column(col))
             self.tree.column(c, width=w, minwidth=60, anchor="w", stretch=True)
         self.tree.grid(row=0, column=0, sticky="nsew")
         tree_scroll_y.grid(row=0, column=1, sticky="ns")
@@ -1427,59 +1415,72 @@ class SBE83GuiApp:
         mid.rowconfigure(0, weight=1)
         mid.columnconfigure(0, weight=1)
 
-        setup_panel = ttk.LabelFrame(self.sample_setup_tab, text="Generic Sample Format", padding=8)
+        # ─── Sample Setup Tab ───────────────────────────────────────────────────
+        setup_panel = ttk.LabelFrame(self.sample_setup_tab, text="⚙ Generic Sample Format", padding=10)
         setup_panel.pack(fill=tk.BOTH, expand=True)
         self._build_sample_format_controls(setup_panel)
 
-        live = ttk.LabelFrame(self.plot_tab, text="Current Run Live View", padding=8)
+        # ─── Live Plot Tab ──────────────────────────────────────────────────────
+        live = ttk.LabelFrame(self.plot_tab, text="📈 Live Sensor View", padding=10)
         live.pack(fill=tk.BOTH, expand=True)
 
+        # Live plot controls - organized in groups
         live_controls = ttk.Frame(live)
-        live_controls.pack(fill=tk.X, pady=(0, 6))
-        ttk.Label(live_controls, text="Plot field").pack(side=tk.LEFT)
+        live_controls.pack(fill=tk.X, pady=(0, 8))
+        
+        # Field selector
+        ttk.Label(live_controls, text="Field:", style="Small.TLabel").pack(side=tk.LEFT)
         self.live_field_var = tk.StringVar(value="Red Phase")
         self.live_field_combo = ttk.Combobox(
             live_controls,
             textvariable=self.live_field_var,
             state="readonly",
-            width=18,
+            width=16,
             values=list(self.live_plot_fields.keys()),
         )
-        self.live_field_combo.pack(side=tk.LEFT, padx=(6, 16))
+        self.live_field_combo.pack(side=tk.LEFT, padx=(4, 12))
         self.live_field_combo.bind("<<ComboboxSelected>>", self._on_live_field_changed)
-        ttk.Button(live_controls, text="Refresh Plot", command=self.refresh_live_plot).pack(side=tk.LEFT, padx=(0, 16))
+        ttk.Button(live_controls, text="↻", command=self.refresh_live_plot, style="Toolbar.TButton").pack(side=tk.LEFT, padx=(0, 12))
+        
+        # Y-axis controls
         ttk.Checkbutton(live_controls, text="Auto Y", variable=self.live_autoscale_var, command=self.refresh_live_plot).pack(
-            side=tk.LEFT, padx=(0, 8)
+            side=tk.LEFT, padx=(0, 6)
         )
-        ttk.Label(live_controls, text="Ymin").pack(side=tk.LEFT)
-        ttk.Entry(live_controls, textvariable=self.live_ymin_var, width=8).pack(side=tk.LEFT, padx=(4, 8))
-        ttk.Label(live_controls, text="Ymax").pack(side=tk.LEFT)
-        ttk.Entry(live_controls, textvariable=self.live_ymax_var, width=8).pack(side=tk.LEFT, padx=(4, 8))
-        ttk.Checkbutton(live_controls, text="Points", variable=self.live_show_points_var, command=self.refresh_live_plot).pack(
-            side=tk.LEFT, padx=(0, 8)
+        ttk.Label(live_controls, text="Y:", style="Small.TLabel").pack(side=tk.LEFT)
+        ttk.Entry(live_controls, textvariable=self.live_ymin_var, width=6).pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Label(live_controls, text="—", style="Small.TLabel").pack(side=tk.LEFT)
+        ttk.Entry(live_controls, textvariable=self.live_ymax_var, width=6).pack(side=tk.LEFT, padx=(2, 12))
+        
+        # Display options
+        ttk.Checkbutton(live_controls, text="●", variable=self.live_show_points_var, command=self.refresh_live_plot).pack(
+            side=tk.LEFT, padx=(0, 6)
         )
         ttk.Checkbutton(
-            live_controls, text="Filter Ports", variable=self.live_visible_only_var, command=self.refresh_live_plot
-        ).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(live_controls, text="Visible Ports", command=self.select_visible_ports).pack(side=tk.LEFT, padx=(0, 12))
-        ttk.Label(live_controls, text="X Start").pack(side=tk.LEFT)
-        ttk.Entry(live_controls, textvariable=self.live_x_start_var, width=6).pack(side=tk.LEFT, padx=(4, 8))
-        ttk.Label(live_controls, text="X End").pack(side=tk.LEFT)
-        ttk.Entry(live_controls, textvariable=self.live_x_end_var, width=6).pack(side=tk.LEFT, padx=(4, 12))
+            live_controls, text="Filter", variable=self.live_visible_only_var, command=self.refresh_live_plot
+        ).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(live_controls, text="Ports", command=self.select_visible_ports, style="Toolbar.TButton").pack(side=tk.LEFT, padx=(0, 12))
+        
+        # X-axis controls
+        ttk.Label(live_controls, text="X:", style="Small.TLabel").pack(side=tk.LEFT)
+        ttk.Entry(live_controls, textvariable=self.live_x_start_var, width=5).pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Label(live_controls, text="—", style="Small.TLabel").pack(side=tk.LEFT)
+        ttk.Entry(live_controls, textvariable=self.live_x_end_var, width=5).pack(side=tk.LEFT, padx=(2, 12))
 
-        self.live_std_var = tk.StringVar(value="Std Dev: n/a")
-        ttk.Label(live_controls, textvariable=self.live_std_var).pack(side=tk.LEFT, padx=(0, 16))
-        self.live_samples_var = tk.StringVar(value="Samples: 0 / 0")
-        ttk.Label(live_controls, textvariable=self.live_samples_var).pack(side=tk.LEFT)
+        # Stats display
+        self.live_std_var = tk.StringVar(value="σ: n/a")
+        ttk.Label(live_controls, textvariable=self.live_std_var, style="Accent.TLabel").pack(side=tk.LEFT, padx=(0, 12))
+        self.live_samples_var = tk.StringVar(value="n: 0")
+        ttk.Label(live_controls, textvariable=self.live_samples_var, style="Muted.TLabel").pack(side=tk.LEFT)
 
+        # Plot area grid
         live_grid = ttk.Frame(live)
         live_grid.pack(fill=tk.BOTH, expand=True)
         live_grid.columnconfigure(0, weight=3)
         live_grid.columnconfigure(1, weight=2)
         live_grid.rowconfigure(0, weight=1)
 
-        self.live_canvas = tk.Canvas(live_grid, bg="#0b1220", height=230, highlightthickness=1, highlightbackground=DARK_BORDER)
-        self.live_canvas.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        self.live_canvas = tk.Canvas(live_grid, bg=DARK_CANVAS, height=230, highlightthickness=1, highlightbackground=DARK_BORDER)
+        self.live_canvas.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         self.live_canvas.bind("<Configure>", lambda _e: self.refresh_live_plot())
 
         self.live_text = scrolledtext.ScrolledText(
@@ -1489,12 +1490,13 @@ class SBE83GuiApp:
             font=self._console_font(),
             bg=DARK_PANEL,
             fg=DARK_TEXT,
-            insertbackground=DARK_TEXT,
+            insertbackground=DARK_ACCENT,
             relief=tk.FLAT,
         )
         self.live_text.grid(row=0, column=1, sticky="nsew")
 
-        bottom = ttk.LabelFrame(self.log_tab, text="Run Log", padding=8)
+        # ─── Run Log Tab ────────────────────────────────────────────────────────
+        bottom = ttk.LabelFrame(self.log_tab, text="📜 Run Log", padding=10)
         bottom.pack(fill=tk.BOTH, expand=True)
         self.log_box = scrolledtext.ScrolledText(
             bottom,
@@ -1503,32 +1505,44 @@ class SBE83GuiApp:
             font=self._console_font(),
             bg=DARK_PANEL,
             fg=DARK_TEXT,
-            insertbackground=DARK_TEXT,
+            insertbackground=DARK_ACCENT,
             relief=tk.FLAT,
         )
         self.log_box.pack(fill=tk.BOTH, expand=True)
 
+
         debug = ttk.LabelFrame(self.debug_tab, text="Serial Debug Consoles (Per COM Port)", padding=8)
         debug.pack(fill=tk.BOTH, expand=True)
+        
+        # Console toolbar
         debug_actions = ttk.Frame(debug)
-        debug_actions.pack(fill=tk.X, pady=(0, 6))
-        ttk.Button(debug_actions, text="Clear Selected Debug Tab", command=self.clear_selected_debug_tab).pack(side=tk.LEFT)
-        ttk.Button(debug_actions, text="Export Console CSV", command=self.export_manual_capture).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Checkbutton(debug_actions, text="CR", variable=self.console_send_cr_var).pack(side=tk.LEFT, padx=(14, 0))
-        ttk.Checkbutton(debug_actions, text="LF", variable=self.console_send_lf_var).pack(side=tk.LEFT, padx=(4, 10))
-        ttk.Label(debug_actions, text="Display").pack(side=tk.LEFT)
-        ttk.Radiobutton(debug_actions, text="ASCII", variable=self.console_display_mode_var, value="ascii").pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Radiobutton(debug_actions, text="HEX", variable=self.console_display_mode_var, value="hex").pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Radiobutton(debug_actions, text="DEC", variable=self.console_display_mode_var, value="dec").pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Radiobutton(debug_actions, text="BIN", variable=self.console_display_mode_var, value="bin").pack(side=tk.LEFT, padx=(4, 0))
+        debug_actions.pack(fill=tk.X, pady=(0, 8))
+        
+        # Actions group
+        ttk.Button(debug_actions, text="🗑 Clear", command=self.clear_selected_debug_tab, style="Toolbar.TButton").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(debug_actions, text="⬇ Export", command=self.export_manual_capture, style="Toolbar.TButton").pack(side=tk.LEFT, padx=(0, 12))
+        
+        # Line ending toggles
+        ttk.Checkbutton(debug_actions, text="CR", variable=self.console_send_cr_var).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Checkbutton(debug_actions, text="LF", variable=self.console_send_lf_var).pack(side=tk.LEFT, padx=(0, 16))
+        
+        # Display mode selector
+        ttk.Label(debug_actions, text="Mode:", style="Small.TLabel").pack(side=tk.LEFT)
+        ttk.Radiobutton(debug_actions, text="ASCII", variable=self.console_display_mode_var, value="ascii").pack(side=tk.LEFT, padx=(6, 2))
+        ttk.Radiobutton(debug_actions, text="HEX", variable=self.console_display_mode_var, value="hex").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Radiobutton(debug_actions, text="DEC", variable=self.console_display_mode_var, value="dec").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Radiobutton(debug_actions, text="BIN", variable=self.console_display_mode_var, value="bin").pack(side=tk.LEFT)
         self.debug_notebook = ttk.Notebook(debug)
         self.debug_notebook.pack(fill=tk.BOTH, expand=True)
+
+        # ─── Serial Port Sniffer Tab ────────────────────────────────────────────
+        self._build_sniffer_tab()
+
         self._rebuild_measureand_editor_rows(self.sample_field_defs)
         self._apply_measureand_config(show_message=False)
         self.root.after(40, self._apply_startup_layout)
         self.root.bind("<Configure>", self._on_root_configure, add="+")
         self.root.bind("<ButtonRelease-1>", lambda _e: self._schedule_layout_save(delay_ms=250), add="+")
-        self.main_split.bind("<ButtonRelease-1>", lambda _e: self._schedule_layout_save(delay_ms=250), add="+")
         self.main_notebook.bind("<<NotebookTabChanged>>", lambda _e: self._schedule_layout_save(delay_ms=250), add="+")
 
     def show_plot_tab(self):
@@ -1723,7 +1737,7 @@ class SBE83GuiApp:
             wraplength=520,
         ).grid(row=6, column=1, sticky="w", pady=(10, 0))
 
-        close_btn = ttk.Button(win, text="Close", width=10, command=lambda: on_close())
+        close_btn = ttk.Button(win, text="Close", width=10, command=lambda: on_close(), style="Secondary.TButton")
         close_btn.grid(row=7, column=1, sticky="e", pady=(14, 0))
 
         win.grid_columnconfigure(1, weight=1)
@@ -2320,12 +2334,12 @@ exit /b 0
         ttk.Entry(top, textvariable=self.example_sample_var, width=72).pack(side=tk.LEFT, padx=(6, 8), fill=tk.X, expand=True)
         ttk.Label(top, text="Delimiter").pack(side=tk.LEFT, padx=(0, 4))
         ttk.Entry(top, textvariable=self.delimiter_var, width=3).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(top, text="Quick Setup + Plot", command=self.quick_setup_from_example).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(top, text="Load From Example", command=self.load_measureands_from_example).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(top, text="Apply Measureands", command=self.apply_measureands_from_editor).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(top, text="Save Profile", command=self.save_parser_profile).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(top, text="Load Profile", command=self.load_parser_profile).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(top, text="Reset Default", command=self.reset_measureands_default).pack(side=tk.LEFT)
+        ttk.Button(top, text="Quick Setup + Plot", command=self.quick_setup_from_example, style="Primary.TButton").pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(top, text="Load From Example", command=self.load_measureands_from_example, style="Secondary.TButton").pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(top, text="Apply Measureands", command=self.apply_measureands_from_editor, style="Success.TButton").pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(top, text="Save Profile", command=self.save_parser_profile, style="Secondary.TButton").pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(top, text="Load Profile", command=self.load_parser_profile, style="Secondary.TButton").pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(top, text="Reset Default", command=self.reset_measureands_default, style="Danger.TButton").pack(side=tk.LEFT)
 
         parser_row = ttk.Frame(self.sample_format_body)
         parser_row.pack(fill=tk.X, pady=(0, 6))
@@ -2817,8 +2831,8 @@ exit /b 0
         metric_combo = ttk.Combobox(top, textvariable=metric_label_var, state="readonly", width=32, values=available)
         metric_combo.pack(side=tk.LEFT, padx=(6, 10))
         plot_paused_var = tk.BooleanVar(value=False)
-        ttk.Button(top, text="Load Reference Session", command=lambda: load_reference_and_render()).pack(side=tk.LEFT, padx=(0, 8))
-        pause_btn = ttk.Button(top, text="Pause Plot")
+        ttk.Button(top, text="Load Reference Session", command=lambda: load_reference_and_render(), style="Secondary.TButton").pack(side=tk.LEFT, padx=(0, 8))
+        pause_btn = ttk.Button(top, text="Pause Plot", style="Secondary.TButton")
         pause_btn.pack(side=tk.LEFT, padx=(0, 8))
         reference_name_var = tk.StringVar(value="Reference: not loaded")
         ttk.Label(top, textvariable=reference_name_var, foreground=DARK_MUTED).pack(side=tk.LEFT, padx=(6, 0))
@@ -3443,8 +3457,8 @@ exit /b 0
         entry = ttk.Entry(controls, textvariable=cmd_var)
         entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         entry.bind("<Return>", lambda _e, p=port: self.send_debug_command(p))
-        ttk.Button(controls, text="Send", command=lambda p=port: self.send_debug_command(p)).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(controls, text="Read", command=lambda p=port: self.read_debug_responses(p)).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(controls, text="Send", command=lambda p=port: self.send_debug_command(p), style="Primary.TButton").pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(controls, text="Read", command=lambda p=port: self.read_debug_responses(p), style="Secondary.TButton").pack(side=tk.LEFT, padx=(6, 0))
         stream_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             controls, text="Stream", variable=stream_var, command=lambda p=port, v=stream_var: self.toggle_stream(p, v.get())
@@ -3609,6 +3623,15 @@ exit /b 0
                 "payload": payload_text,
             }
         )
+        
+        # Feed to sniffer if mirroring this port
+        if self.sniffer_mirror_mode and self.sniffer_mirror_port == port:
+            dir_filter = self.sniffer_direction_var.get()
+            if dir_filter == "both" or dir_filter == direction.lower():
+                raw = payload if isinstance(payload, (bytes, bytearray)) else str(payload).encode("utf-8", errors="replace")
+                timestamp = dt.datetime.now()
+                self.sniffer_buffer.append((timestamp, raw))
+                self._append_sniffer_data(raw, timestamp, direction=direction)
 
     def _process_ui_events(self):
         drained = 0
@@ -3833,6 +3856,763 @@ exit /b 0
             self.set_port_status(port, "DISCONNECTED")
         self.log("All ports disconnected")
         self.update_connection_labels()
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # SERIAL PORT SNIFFER
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _build_sniffer_tab(self):
+        """Build the Serial Port Sniffer UI."""
+        sniffer = ttk.LabelFrame(self.sniffer_tab, text="🔍 Serial Port Sniffer", padding=10)
+        sniffer.pack(fill=tk.BOTH, expand=True)
+
+        # ─── Connection Controls ────────────────────────────────────────────
+        controls = ttk.Frame(sniffer)
+        controls.pack(fill=tk.X, pady=(0, 10))
+
+        # Port selector
+        ttk.Label(controls, text="Port:", style="Small.TLabel").pack(side=tk.LEFT)
+        self.sniffer_port_combo = ttk.Combobox(
+            controls,
+            textvariable=self.sniffer_port_var,
+            state="readonly",
+            width=12,
+            values=[],
+        )
+        self.sniffer_port_combo.pack(side=tk.LEFT, padx=(4, 12))
+
+        # Baud rate selector
+        ttk.Label(controls, text="Baud:", style="Small.TLabel").pack(side=tk.LEFT)
+        baud_combo = ttk.Combobox(
+            controls,
+            textvariable=self.sniffer_baud_var,
+            width=8,
+            values=[300, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600],
+        )
+        baud_combo.pack(side=tk.LEFT, padx=(4, 12))
+
+        # Refresh ports button
+        ttk.Button(controls, text="↻", command=self._refresh_sniffer_ports, style="Toolbar.TButton").pack(side=tk.LEFT, padx=(0, 12))
+
+        # Start/Stop buttons
+        self.sniffer_start_btn = ttk.Button(
+            controls, text="▶ Start", command=self._start_sniffer, style="Success.TButton"
+        )
+        self.sniffer_start_btn.pack(side=tk.LEFT, padx=(0, 4))
+
+        self.sniffer_mirror_btn = ttk.Button(
+            controls, text="📡 Mirror", command=self._start_mirror, style="Primary.TButton"
+        )
+        self.sniffer_mirror_btn.pack(side=tk.LEFT, padx=(0, 4))
+
+        self.sniffer_stop_btn = ttk.Button(
+            controls, text="◼ Stop", command=self._stop_sniffer, style="Danger.TButton", state=tk.DISABLED
+        )
+        self.sniffer_stop_btn.pack(side=tk.LEFT, padx=(0, 12))
+
+        # Status indicator
+        self.sniffer_status_var = tk.StringVar(value="● Idle")
+        self.sniffer_status_label = ttk.Label(controls, textvariable=self.sniffer_status_var, style="Muted.TLabel")
+        self.sniffer_status_label.pack(side=tk.LEFT, padx=(0, 12))
+
+        # Bytes received counter
+        self.sniffer_bytes_var = tk.StringVar(value="0 bytes")
+        ttk.Label(controls, textvariable=self.sniffer_bytes_var, style="Accent.TLabel").pack(side=tk.LEFT)
+
+        # ─── Display Options ────────────────────────────────────────────────
+        options = ttk.Frame(sniffer)
+        options.pack(fill=tk.X, pady=(0, 8))
+
+        # Display mode
+        ttk.Label(options, text="Display:", style="Small.TLabel").pack(side=tk.LEFT)
+        ttk.Radiobutton(options, text="Hex Dump", variable=self.sniffer_display_mode_var, value="hexdump").pack(side=tk.LEFT, padx=(6, 4))
+        ttk.Radiobutton(options, text="Raw HEX", variable=self.sniffer_display_mode_var, value="hex").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Radiobutton(options, text="ASCII", variable=self.sniffer_display_mode_var, value="ascii").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Radiobutton(options, text="Binary", variable=self.sniffer_display_mode_var, value="bin").pack(side=tk.LEFT, padx=(0, 12))
+
+        # Options
+        ttk.Checkbutton(options, text="Timestamps", variable=self.sniffer_show_timestamp_var).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Checkbutton(options, text="Auto-scroll", variable=self.sniffer_autoscroll_var).pack(side=tk.LEFT, padx=(0, 12))
+
+        # Direction filter (for mirror mode)
+        ttk.Label(options, text="Dir:", style="Small.TLabel").pack(side=tk.LEFT)
+        ttk.Radiobutton(options, text="Both", variable=self.sniffer_direction_var, value="both").pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Radiobutton(options, text="RX", variable=self.sniffer_direction_var, value="rx").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Radiobutton(options, text="TX", variable=self.sniffer_direction_var, value="tx").pack(side=tk.LEFT, padx=(0, 12))
+
+        # Actions
+        ttk.Button(options, text="🗑 Clear", command=self._clear_sniffer, style="Toolbar.TButton").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(options, text="⬇ Export", command=self._export_sniffer, style="Toolbar.TButton").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(options, text="📋 Copy", command=self._copy_sniffer, style="Toolbar.TButton").pack(side=tk.LEFT)
+
+        # ─── com0com Bridge Mode ────────────────────────────────────────────
+        bridge_frame = ttk.LabelFrame(sniffer, text="🔀 com0com Bridge Mode (Intercept External Apps)", padding=8)
+        bridge_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        bridge_info = ttk.Label(
+            bridge_frame,
+            text="Creates a pass-through bridge: External App → Virtual Port ↔ Bridge ↔ Real Port → Device",
+            style="Muted.TLabel"
+        )
+        bridge_info.pack(fill=tk.X, pady=(0, 6))
+        
+        bridge_controls = ttk.Frame(bridge_frame)
+        bridge_controls.pack(fill=tk.X)
+        
+        # Real port (device)
+        ttk.Label(bridge_controls, text="Real Port:", style="Small.TLabel").pack(side=tk.LEFT)
+        self.bridge_real_combo = ttk.Combobox(
+            bridge_controls,
+            textvariable=self.bridge_real_port_var,
+            state="readonly",
+            width=10,
+            values=[],
+        )
+        self.bridge_real_combo.pack(side=tk.LEFT, padx=(4, 12))
+        
+        ttk.Label(bridge_controls, text="↔", style="Small.TLabel").pack(side=tk.LEFT, padx=(0, 12))
+        
+        # Virtual port (com0com - app connects here)
+        ttk.Label(bridge_controls, text="Virtual Port:", style="Small.TLabel").pack(side=tk.LEFT)
+        self.bridge_virtual_combo = ttk.Combobox(
+            bridge_controls,
+            textvariable=self.bridge_virtual_port_var,
+            state="readonly",
+            width=10,
+            values=[],
+        )
+        self.bridge_virtual_combo.pack(side=tk.LEFT, padx=(4, 12))
+        
+        # Bridge buttons
+        self.bridge_start_btn = ttk.Button(
+            bridge_controls, text="🔗 Start Bridge", command=self._start_bridge, style="Primary.TButton"
+        )
+        self.bridge_start_btn.pack(side=tk.LEFT, padx=(0, 4))
+        
+        self.bridge_stop_btn = ttk.Button(
+            bridge_controls, text="◼ Stop", command=self._stop_bridge, style="Danger.TButton", state=tk.DISABLED
+        )
+        self.bridge_stop_btn.pack(side=tk.LEFT, padx=(0, 12))
+        
+        # Bridge status
+        self.bridge_status_var = tk.StringVar(value="")
+        ttk.Label(bridge_controls, textvariable=self.bridge_status_var, style="Muted.TLabel").pack(side=tk.LEFT, padx=(0, 8))
+        
+        # Detect com0com button
+        ttk.Button(bridge_controls, text="🔍 Detect com0com", command=self._detect_com0com_ports, style="Toolbar.TButton").pack(side=tk.LEFT)
+        
+        # Help link
+        ttk.Button(bridge_controls, text="?", command=self._show_bridge_help, style="Toolbar.TButton", width=3).pack(side=tk.RIGHT)
+
+        # ─── Output Area ────────────────────────────────────────────────────
+        output_frame = ttk.Frame(sniffer)
+        output_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.sniffer_text = scrolledtext.ScrolledText(
+            output_frame,
+            height=20,
+            state=tk.DISABLED,
+            font=("Consolas", 10),
+            bg=DARK_CANVAS,
+            fg=DARK_TEXT,
+            insertbackground=DARK_ACCENT,
+            relief=tk.FLAT,
+            wrap=tk.NONE,
+        )
+        self.sniffer_text.pack(fill=tk.BOTH, expand=True)
+
+        # Configure text tags for styling
+        self.sniffer_text.tag_configure("offset", foreground=DARK_MUTED)
+        self.sniffer_text.tag_configure("hex", foreground=DARK_ACCENT)
+        self.sniffer_text.tag_configure("ascii", foreground=DARK_TEXT)
+        self.sniffer_text.tag_configure("timestamp", foreground=DARK_ACCENT_HI)
+        self.sniffer_text.tag_configure("nonprint", foreground=DARK_MUTED)
+        self.sniffer_text.tag_configure("rx", foreground="#4ade80")  # Green for received
+        self.sniffer_text.tag_configure("tx", foreground="#f472b6")  # Pink for transmitted
+        self.sniffer_text.tag_configure("direction", foreground=DARK_ACCENT_HI, font=("Consolas", 10, "bold"))
+
+        # Initialize port lists
+        self._refresh_sniffer_ports()
+        self._init_bridge_ports()
+
+    def _refresh_sniffer_ports(self):
+        """Refresh the list of available COM ports for the sniffer."""
+        ports = []
+        for p in list_ports.comports():
+            port = p.device
+            # Mark ports that are connected (can be mirrored)
+            if port in self.serial_pool and self.serial_pool[port].is_open:
+                ports.append(f"{port} (connected)")
+            else:
+                ports.append(port)
+        self.sniffer_port_combo["values"] = ports
+        if ports and not self.sniffer_port_var.get():
+            self.sniffer_port_var.set(ports[0].split(" ")[0])  # Set just the port name
+
+    def _init_bridge_ports(self):
+        """Initialize bridge port dropdowns with available ports."""
+        all_ports = [p.device for p in list_ports.comports()]
+        # Set real port combo to all ports
+        self.bridge_real_combo["values"] = all_ports
+        if all_ports:
+            self.bridge_real_port_var.set(all_ports[0])
+        # Leave virtual port empty until user clicks Detect
+        self.bridge_virtual_combo["values"] = []
+
+    def _start_sniffer(self):
+        """Start sniffing the selected serial port."""
+        port = self.sniffer_port_var.get().strip().split(" ")[0]  # Strip "(connected)" suffix
+        if not port:
+            messagebox.showwarning("No Port", "Select a COM port first.")
+            return
+
+        # Check if port is already in use by the main app - suggest mirror mode
+        if port in self.serial_pool and self.serial_pool[port].is_open:
+            messagebox.showinfo(
+                "Use Mirror Mode",
+                f"{port} is already connected in this application.\n\n"
+                "Use the '📡 Mirror' button instead to view traffic\n"
+                "without disconnecting."
+            )
+            return
+
+        try:
+            baud = int(self.sniffer_baud_var.get())
+            self.sniffer_serial = serial.Serial(
+                port=port,
+                baudrate=baud,
+                bytesize=8,
+                parity="N",
+                stopbits=1,
+                timeout=0.1,
+            )
+            self.sniffer_running = True
+            self.sniffer_mirror_mode = False
+            self.sniffer_mirror_port = None
+            self.sniffer_stop_event.clear()
+            self.sniffer_byte_offset = 0
+            self.sniffer_buffer.clear()
+
+            # Update UI state
+            self.sniffer_start_btn.configure(state=tk.DISABLED)
+            self.sniffer_mirror_btn.configure(state=tk.DISABLED)
+            self.sniffer_stop_btn.configure(state=tk.NORMAL)
+            self.sniffer_port_combo.configure(state=tk.DISABLED)
+            self.sniffer_status_var.set("● Sniffing")
+            self.sniffer_status_label.configure(style="OK.TLabel")
+
+            # Start reader thread
+            self.sniffer_thread = threading.Thread(target=self._sniffer_read_loop, daemon=True)
+            self.sniffer_thread.start()
+
+            self.log(f"Sniffer started: {port} @ {baud}")
+
+        except serial.SerialException as exc:
+            # Port likely in use by another application
+            err_str = str(exc).lower()
+            if "access is denied" in err_str or "permission" in err_str or "in use" in err_str:
+                messagebox.showwarning(
+                    "Port In Use (External)",
+                    f"{port} is in use by another application.\n\n"
+                    "Python cannot access ports owned by external programs.\n"
+                    "Options:\n"
+                    "• Close the other application\n"
+                    "• Use a hardware serial Y-splitter/tap\n"
+                    "• Use driver-level software (e.g., com0com)"
+                )
+            else:
+                messagebox.showerror("Sniffer Error", f"Failed to open {port}: {exc}")
+            self.sniffer_status_var.set("● Error")
+            self.sniffer_status_label.configure(style="Fail.TLabel")
+        except Exception as exc:
+            messagebox.showerror("Sniffer Error", f"Failed to open {port}: {exc}")
+            self.sniffer_status_var.set("● Error")
+            self.sniffer_status_label.configure(style="Fail.TLabel")
+
+    def _start_mirror(self):
+        """Start mirroring traffic from a port already connected by the main app."""
+        port = self.sniffer_port_var.get().strip().split(" ")[0]  # Strip "(connected)" suffix
+        if not port:
+            messagebox.showwarning("No Port", "Select a COM port first.")
+            return
+
+        # Check if port is connected by the main app
+        if port not in self.serial_pool or not self.serial_pool[port].is_open:
+            messagebox.showinfo(
+                "Port Not Connected",
+                f"{port} is not connected in the main application.\n\n"
+                "Mirror mode requires the port to be connected via\n"
+                "the main Connect button first.\n\n"
+                "Use '▶ Start' instead to open the port directly."
+            )
+            return
+
+        # Start mirror mode
+        self.sniffer_running = True
+        self.sniffer_mirror_mode = True
+        self.sniffer_mirror_port = port
+        self.sniffer_byte_offset = 0
+        self.sniffer_buffer.clear()
+        self._clear_sniffer()
+
+        # Update UI state
+        self.sniffer_start_btn.configure(state=tk.DISABLED)
+        self.sniffer_mirror_btn.configure(state=tk.DISABLED)
+        self.sniffer_stop_btn.configure(state=tk.NORMAL)
+        self.sniffer_port_combo.configure(state=tk.DISABLED)
+        self.sniffer_status_var.set(f"● Mirroring {port}")
+        self.sniffer_status_label.configure(style="Accent.TLabel")
+
+        self.log(f"Sniffer mirroring: {port}")
+
+    def _stop_sniffer(self):
+        """Stop the sniffer."""
+        self.sniffer_stop_event.set()
+        self.sniffer_running = False
+        self.sniffer_mirror_mode = False
+        self.sniffer_mirror_port = None
+
+        if self.sniffer_serial:
+            try:
+                self.sniffer_serial.close()
+            except Exception:
+                pass
+            self.sniffer_serial = None
+
+        # Update UI state
+        self.sniffer_start_btn.configure(state=tk.NORMAL)
+        self.sniffer_mirror_btn.configure(state=tk.NORMAL)
+        self.sniffer_stop_btn.configure(state=tk.DISABLED)
+        self.sniffer_port_combo.configure(state="readonly")
+        self.sniffer_status_var.set("● Stopped")
+        self.sniffer_status_label.configure(style="Muted.TLabel")
+
+        self.log("Sniffer stopped")
+
+    def _sniffer_read_loop(self):
+        """Background thread that reads from the serial port."""
+        while not self.sniffer_stop_event.is_set() and self.sniffer_running:
+            try:
+                if self.sniffer_serial and self.sniffer_serial.is_open:
+                    data = self.sniffer_serial.read(256)
+                    if data:
+                        timestamp = dt.datetime.now()
+                        self.sniffer_buffer.append((timestamp, data))
+                        # Schedule UI update on main thread
+                        self.root.after(0, lambda d=data, t=timestamp: self._append_sniffer_data(d, t))
+            except serial.SerialException:
+                self.root.after(0, self._stop_sniffer)
+                break
+            except Exception:
+                pass
+
+    def _append_sniffer_data(self, data: bytes, timestamp: dt.datetime, direction: str = None):
+        """Append received data to the sniffer output.
+        
+        Args:
+            data: Raw bytes to display
+            timestamp: When the data was received
+            direction: Optional 'TX' or 'RX' for mirror mode
+        """
+        mode = self.sniffer_display_mode_var.get()
+        show_ts = self.sniffer_show_timestamp_var.get()
+
+        self.sniffer_text.configure(state=tk.NORMAL)
+
+        # Show direction indicator for mirror mode
+        if direction and self.sniffer_mirror_mode:
+            dir_tag = "rx" if direction.upper() == "RX" else "tx"
+            self.sniffer_text.insert(tk.END, f"[{direction}] ", dir_tag)
+
+        if mode == "hexdump":
+            self._append_hexdump(data, timestamp if show_ts else None, direction)
+        elif mode == "hex":
+            self._append_raw_hex(data, timestamp if show_ts else None, direction)
+        elif mode == "ascii":
+            self._append_ascii(data, timestamp if show_ts else None, direction)
+        elif mode == "bin":
+            self._append_binary(data, timestamp if show_ts else None, direction)
+
+        self.sniffer_text.configure(state=tk.DISABLED)
+
+        # Update byte counter
+        total_bytes = sum(len(d) for _, d in self.sniffer_buffer)
+        self.sniffer_bytes_var.set(f"{total_bytes:,} bytes")
+
+        # Auto-scroll
+        if self.sniffer_autoscroll_var.get():
+            self.sniffer_text.see(tk.END)
+
+    def _append_hexdump(self, data: bytes, timestamp=None, direction=None):
+        """Append data in classic hex dump format: offset | hex bytes | ASCII."""
+        bytes_per_line = 16
+        hex_tag = "rx" if direction and direction.upper() == "RX" else ("tx" if direction else "hex")
+
+        for i in range(0, len(data), bytes_per_line):
+            chunk = data[i:i + bytes_per_line]
+
+            # Timestamp (optional)
+            if timestamp and i == 0:
+                ts_str = timestamp.strftime("%H:%M:%S.%f")[:-3] + " "
+                self.sniffer_text.insert(tk.END, ts_str, "timestamp")
+
+            # Offset
+            offset_str = f"{self.sniffer_byte_offset:08X}  "
+            self.sniffer_text.insert(tk.END, offset_str, "offset")
+
+            # Hex bytes
+            hex_parts = []
+            for j, b in enumerate(chunk):
+                hex_parts.append(f"{b:02X}")
+                if j == 7:
+                    hex_parts.append("")  # Extra space in middle
+            hex_str = " ".join(hex_parts).ljust(50)
+            self.sniffer_text.insert(tk.END, hex_str, hex_tag)
+
+            # ASCII representation
+            self.sniffer_text.insert(tk.END, " │ ", "offset")
+            for b in chunk:
+                if 32 <= b <= 126:
+                    self.sniffer_text.insert(tk.END, chr(b), "ascii")
+                else:
+                    self.sniffer_text.insert(tk.END, ".", "nonprint")
+
+            self.sniffer_text.insert(tk.END, "\n")
+            self.sniffer_byte_offset += len(chunk)
+
+    def _append_raw_hex(self, data: bytes, timestamp=None, direction=None):
+        """Append data as raw hex bytes."""
+        if timestamp:
+            ts_str = timestamp.strftime("[%H:%M:%S.%f]")[:-4] + "] "
+            self.sniffer_text.insert(tk.END, ts_str, "timestamp")
+
+        hex_tag = "rx" if direction and direction.upper() == "RX" else ("tx" if direction else "hex")
+        hex_str = " ".join(f"{b:02X}" for b in data) + " "
+        self.sniffer_text.insert(tk.END, hex_str, hex_tag)
+
+    def _append_ascii(self, data: bytes, timestamp=None, direction=None):
+        """Append data as ASCII with non-printables shown."""
+        if timestamp:
+            ts_str = timestamp.strftime("[%H:%M:%S.%f]")[:-4] + "] "
+            self.sniffer_text.insert(tk.END, ts_str, "timestamp")
+
+        text_tag = "rx" if direction and direction.upper() == "RX" else ("tx" if direction else "ascii")
+        nonprint_tag = "nonprint"
+        for b in data:
+            if b == 13:  # CR
+                self.sniffer_text.insert(tk.END, "<CR>", "nonprint")
+            elif b == 10:  # LF
+                self.sniffer_text.insert(tk.END, "<LF>\n", "nonprint")
+            elif b == 9:  # TAB
+                self.sniffer_text.insert(tk.END, "<TAB>", "nonprint")
+            elif 32 <= b <= 126:
+                self.sniffer_text.insert(tk.END, chr(b), text_tag)
+            else:
+                self.sniffer_text.insert(tk.END, f"<{b:02X}>", nonprint_tag)
+
+    def _append_binary(self, data: bytes, timestamp=None, direction=None):
+        """Append data as binary."""
+        if timestamp:
+            ts_str = timestamp.strftime("[%H:%M:%S.%f]")[:-4] + "] "
+            self.sniffer_text.insert(tk.END, ts_str, "timestamp")
+
+        hex_tag = "rx" if direction and direction.upper() == "RX" else ("tx" if direction else "hex")
+        bin_str = " ".join(f"{b:08b}" for b in data) + " "
+        self.sniffer_text.insert(tk.END, bin_str, hex_tag)
+
+    def _clear_sniffer(self):
+        """Clear the sniffer output."""
+        self.sniffer_text.configure(state=tk.NORMAL)
+        self.sniffer_text.delete("1.0", tk.END)
+        self.sniffer_text.configure(state=tk.DISABLED)
+        self.sniffer_buffer.clear()
+        self.sniffer_byte_offset = 0
+        self.sniffer_bytes_var.set("0 bytes")
+
+    def _export_sniffer(self):
+        """Export sniffer data to a file."""
+        if not self.sniffer_buffer:
+            messagebox.showinfo("Export", "No data to export.")
+            return
+
+        path = filedialog.asksaveasfilename(
+            defaultextension=".bin",
+            filetypes=[
+                ("Binary file", "*.bin"),
+                ("Hex text", "*.hex"),
+                ("Text file", "*.txt"),
+                ("All files", "*.*"),
+            ],
+            title="Export Sniffer Data",
+        )
+        if not path:
+            return
+
+        try:
+            ext = os.path.splitext(path)[1].lower()
+            if ext == ".bin":
+                # Export raw binary
+                with open(path, "wb") as f:
+                    for _, data in self.sniffer_buffer:
+                        f.write(data)
+            elif ext == ".hex":
+                # Export as hex string
+                with open(path, "w", encoding="utf-8") as f:
+                    for ts, data in self.sniffer_buffer:
+                        hex_str = " ".join(f"{b:02X}" for b in data)
+                        f.write(f"[{ts.strftime('%H:%M:%S.%f')[:-3]}] {hex_str}\n")
+            else:
+                # Export as text (hex dump format)
+                with open(path, "w", encoding="utf-8") as f:
+                    offset = 0
+                    for ts, data in self.sniffer_buffer:
+                        f.write(f"--- {ts.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]} ---\n")
+                        for i in range(0, len(data), 16):
+                            chunk = data[i:i + 16]
+                            hex_str = " ".join(f"{b:02X}" for b in chunk).ljust(48)
+                            ascii_str = "".join(chr(b) if 32 <= b <= 126 else "." for b in chunk)
+                            f.write(f"{offset:08X}  {hex_str}  │{ascii_str}│\n")
+                            offset += len(chunk)
+
+            self.log(f"Sniffer data exported: {path}")
+            messagebox.showinfo("Export", f"Data exported to:\n{path}")
+
+        except Exception as exc:
+            messagebox.showerror("Export Error", str(exc))
+
+    def _copy_sniffer(self):
+        """Copy sniffer output to clipboard."""
+        content = self.sniffer_text.get("1.0", tk.END).strip()
+        if not content:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(content)
+        self.log("Sniffer output copied to clipboard")
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # COM0COM BRIDGE MODE
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _detect_com0com_ports(self):
+        """Detect com0com virtual serial ports and populate dropdowns."""
+        all_ports = list(list_ports.comports())
+        virtual_ports = []
+        real_ports = []
+        
+        for p in all_ports:
+            port = p.device
+            desc = (p.description or "").lower()
+            hwid = (p.hwid or "").lower()
+            
+            # com0com ports typically have these identifiers
+            is_virtual = (
+                "com0com" in desc or
+                "com0com" in hwid or
+                "cnca" in hwid or  # com0com port A
+                "cncb" in hwid or  # com0com port B
+                "virtual" in desc.lower() or
+                "null" in desc.lower()
+            )
+            
+            if is_virtual:
+                virtual_ports.append(f"{port} ({p.description})")
+            else:
+                real_ports.append(port)
+        
+        self.bridge_real_combo["values"] = real_ports
+        self.bridge_virtual_combo["values"] = virtual_ports
+        
+        if virtual_ports:
+            self.bridge_virtual_port_var.set(virtual_ports[0].split(" ")[0])
+            self.bridge_status_var.set(f"Found {len(virtual_ports)} virtual port(s)")
+            self.log(f"com0com: Found {len(virtual_ports)} virtual port(s)")
+        else:
+            self.bridge_status_var.set("No com0com ports found")
+            self.log("com0com: No virtual ports detected. Install com0com first.")
+        
+        if real_ports:
+            self.bridge_real_port_var.set(real_ports[0])
+
+    def _start_bridge(self):
+        """Start the com0com bridge to intercept traffic."""
+        real_port = self.bridge_real_port_var.get().strip()
+        virtual_port = self.bridge_virtual_port_var.get().strip().split(" ")[0]  # Strip description
+        
+        if not real_port:
+            messagebox.showwarning("Bridge Error", "Select the real device port first.")
+            return
+        if not virtual_port:
+            messagebox.showwarning("Bridge Error", "Select a com0com virtual port first.")
+            return
+        if real_port == virtual_port:
+            messagebox.showwarning("Bridge Error", "Real and virtual ports must be different.")
+            return
+        
+        # Check if ports are in use
+        if real_port in self.serial_pool:
+            messagebox.showwarning("Port In Use", f"{real_port} is already connected.\nDisconnect it first.")
+            return
+        
+        try:
+            baud = int(self.sniffer_baud_var.get())
+            
+            # Open real port (to the actual device)
+            self.bridge_real_serial = serial.Serial(
+                port=real_port,
+                baudrate=baud,
+                bytesize=8,
+                parity="N",
+                stopbits=1,
+                timeout=0.05,
+            )
+            
+            # Open virtual port (com0com pair - other app connects to the paired port)
+            self.bridge_virtual_serial = serial.Serial(
+                port=virtual_port,
+                baudrate=baud,
+                bytesize=8,
+                parity="N",
+                stopbits=1,
+                timeout=0.05,
+            )
+            
+            self.bridge_mode = True
+            self.bridge_stop_event.clear()
+            self.sniffer_byte_offset = 0
+            self.sniffer_buffer.clear()
+            self._clear_sniffer()
+            
+            # Start bidirectional forwarding threads
+            self.bridge_thread_rx = threading.Thread(
+                target=self._bridge_forward_loop,
+                args=(self.bridge_real_serial, self.bridge_virtual_serial, "RX"),
+                daemon=True
+            )
+            self.bridge_thread_tx = threading.Thread(
+                target=self._bridge_forward_loop,
+                args=(self.bridge_virtual_serial, self.bridge_real_serial, "TX"),
+                daemon=True
+            )
+            self.bridge_thread_rx.start()
+            self.bridge_thread_tx.start()
+            
+            # Update UI
+            self.bridge_start_btn.configure(state=tk.DISABLED)
+            self.bridge_stop_btn.configure(state=tk.NORMAL)
+            self.bridge_real_combo.configure(state=tk.DISABLED)
+            self.bridge_virtual_combo.configure(state=tk.DISABLED)
+            self.sniffer_start_btn.configure(state=tk.DISABLED)
+            self.sniffer_mirror_btn.configure(state=tk.DISABLED)
+            self.sniffer_status_var.set(f"● Bridging {real_port} ↔ {virtual_port}")
+            self.sniffer_status_label.configure(style="Accent.TLabel")
+            self.bridge_status_var.set("Bridging active")
+            
+            self.log(f"Bridge started: {real_port} ↔ {virtual_port} @ {baud}")
+            self.log(f"  External app should connect to the PAIRED port of {virtual_port}")
+            
+        except Exception as exc:
+            self._stop_bridge()
+            messagebox.showerror("Bridge Error", f"Failed to start bridge:\n{exc}")
+
+    def _stop_bridge(self):
+        """Stop the com0com bridge."""
+        self.bridge_stop_event.set()
+        self.bridge_mode = False
+        
+        # Close ports
+        for ser in [self.bridge_real_serial, self.bridge_virtual_serial]:
+            if ser:
+                try:
+                    ser.close()
+                except Exception:
+                    pass
+        self.bridge_real_serial = None
+        self.bridge_virtual_serial = None
+        
+        # Wait for threads
+        for t in [self.bridge_thread_rx, self.bridge_thread_tx]:
+            if t and t.is_alive():
+                t.join(timeout=0.5)
+        self.bridge_thread_rx = None
+        self.bridge_thread_tx = None
+        
+        # Update UI
+        self.bridge_start_btn.configure(state=tk.NORMAL)
+        self.bridge_stop_btn.configure(state=tk.DISABLED)
+        self.bridge_real_combo.configure(state="readonly")
+        self.bridge_virtual_combo.configure(state="readonly")
+        self.sniffer_start_btn.configure(state=tk.NORMAL)
+        self.sniffer_mirror_btn.configure(state=tk.NORMAL)
+        self.sniffer_status_var.set("● Stopped")
+        self.sniffer_status_label.configure(style="Muted.TLabel")
+        self.bridge_status_var.set("")
+        
+        self.log("Bridge stopped")
+
+    def _bridge_forward_loop(self, source: serial.Serial, dest: serial.Serial, direction: str):
+        """Forward data from source to dest while logging to sniffer.
+        
+        Args:
+            source: Serial port to read from
+            dest: Serial port to write to
+            direction: 'RX' (real→virtual, device responses) or 'TX' (virtual→real, app commands)
+        """
+        while not self.bridge_stop_event.is_set() and self.bridge_mode:
+            try:
+                if source and source.is_open:
+                    data = source.read(256)
+                    if data:
+                        # Forward to destination
+                        if dest and dest.is_open:
+                            dest.write(data)
+                        
+                        # Log to sniffer display
+                        timestamp = dt.datetime.now()
+                        self.sniffer_buffer.append((timestamp, data, direction))
+                        
+                        # Check direction filter
+                        dir_filter = self.sniffer_direction_var.get()
+                        if dir_filter == "both" or dir_filter == direction.lower():
+                            self.root.after(0, lambda d=data, t=timestamp, dr=direction: 
+                                self._append_sniffer_data(d, t, direction=dr))
+            except serial.SerialException:
+                self.root.after(0, self._stop_bridge)
+                break
+            except Exception:
+                pass
+
+    def _show_bridge_help(self):
+        """Show help dialog for com0com bridge mode."""
+        help_text = """com0com Bridge Mode - Intercept External Application Traffic
+
+SETUP:
+1. Install com0com (https://sourceforge.net/projects/com0com/)
+2. Run com0com Setup to create a virtual port pair (e.g., COM10 ↔ COM11)
+3. In this app:
+   • Real Port: Select your actual device (e.g., COM3)
+   • Virtual Port: Select one side of the pair (e.g., COM10)
+4. Configure your external app to use the OTHER side of the pair (e.g., COM11)
+5. Click "Start Bridge"
+
+HOW IT WORKS:
+External App → COM11 ↔ [com0com pair] ↔ COM10 → [This Bridge] → COM3 → Device
+                                                      ↓
+                                               Sniffer Display
+
+The bridge transparently forwards all traffic between the virtual port
+and real device while capturing everything for display.
+
+EXAMPLE:
+• Device is on COM3
+• Create com0com pair: COM10 ↔ COM11
+• In this app: Real=COM3, Virtual=COM10
+• Configure external app to use COM11
+• All traffic between the app and device is now visible!
+
+NOTE: Install com0com with "install CNCA0 PortName=COM10 CNCB0 PortName=COM11"
+or use the Setup GUI to create custom port pairs."""
+        
+        messagebox.showinfo("com0com Bridge Help", help_text)
 
     def _console_command_bytes(self, cmd):
         suffix = b""
@@ -4129,7 +4909,7 @@ exit /b 0
             self.refresh_live_plot()
             win.destroy()
 
-        ttk.Button(win, text="Apply", command=apply_and_close).grid(row=len(ports), column=0, sticky="e", padx=8, pady=8)
+        ttk.Button(win, text="Apply", command=apply_and_close, style="Primary.TButton").grid(row=len(ports), column=0, sticky="e", padx=8, pady=8)
 
     def _update_live_samples_label(self):
         if not self.live_run_total_samples_by_port:
@@ -4502,6 +5282,9 @@ exit /b 0
         self.batch_runs_remaining_by_port = {port: run_count for port in connected_ports}
         self._update_runs_left_label()
         self._reset_live_view_for_ports(connected_ports, n_samples)
+        # Auto-collapse panels and switch to Live Plot when run starts for maximum view
+        self._auto_collapse_for_run()
+        self._focus_live_layout(update_mode=True)
         self.log(
             f"Starting parallel test across {len(connected_ports)} port(s): {', '.join(connected_ports)} "
             f"| runs={run_count}, samples={n_samples}, delay={delay_s:.1f}s"
@@ -4722,6 +5505,8 @@ exit /b 0
             self.run_in_progress = False
             self.update_run_button_state()
             self.log("Parallel run complete on all connected ports.")
+            # Auto-switch to Results tab when run completes
+            self._focus_results_layout()
 
     @staticmethod
     def fmt(v):
@@ -4786,6 +5571,27 @@ exit /b 0
             except Exception:
                 pass
         self.serial_pool.clear()
+
+        # Stop sniffer if running
+        self.sniffer_stop_event.set()
+        if self.sniffer_serial:
+            try:
+                self.sniffer_serial.close()
+            except Exception:
+                pass
+            self.sniffer_serial = None
+
+        # Stop bridge if running
+        self.bridge_stop_event.set()
+        self.bridge_mode = False
+        for ser in [self.bridge_real_serial, self.bridge_virtual_serial]:
+            if ser:
+                try:
+                    ser.close()
+                except Exception:
+                    pass
+        self.bridge_real_serial = None
+        self.bridge_virtual_serial = None
 
         for t in run_threads:
             if t and t.is_alive():

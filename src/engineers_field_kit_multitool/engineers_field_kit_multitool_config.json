@@ -1,15 +1,13 @@
 {
   "dark_mode": true,
-  "port_station_collapsed": false,
+  "port_station_collapsed": true,
   "config_mode": false,
   "layout_state": {
     "window_state": "zoomed",
     "window_geometry": "1536x889+-8+-8",
     "normal_window_geometry": "860x540+338+140",
-    "main_split_sash": 471,
-    "plot_split_sash": 0,
-    "sample_format_expanded": false,
-    "active_tab_text": "Test Results"
+    "sample_format_expanded": true,
+    "active_tab_text": "  \ud83d\udd0d Sniffer  "
   },
   "sample_setup_defaults": {
     "tsr_fields": [
@@ -210,5 +208,10 @@
       "plot_session": false,
       "live_default": false
     }
-  ]
+  ],
+  "debug_mode": false,
+  "update_manifest_url": "",
+  "auto_check_updates": true,
+  "non_debug_results_root": "C:\\prod_ecov2\\git_entry\\src\\engineers_field_kit_multitool\\sessions_local\\SBE83",
+  "test_setup_collapsed": true
 }

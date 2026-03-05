@@ -1,394 +1,598 @@
-﻿# Sea-Bird Scientific Digital Sensor Workbench (SBS DSW)
+﻿<![CDATA[<div align="center">
 
-Version: `v1.3.0`
+# 🔬 Sea-Bird Scientific Digital Sensor Workbench
 
-This file is the primary end-user guide and is the source opened by the in-app `Help` link.
+**SBS DSW** — Professional bench workflow tool for digital sensor testing
 
-## Start Here
+![Version](https://img.shields.io/badge/version-1.5.0-00d4aa?style=flat-square)
+![Python](https://img.shields.io/badge/python-3.9+-1e3a5f?style=flat-square)
+![Platform](https://img.shields.io/badge/platform-Windows-0078d4?style=flat-square)
 
-- New user: go to [Fast Path](docs/QUICKSTART_ONE_PAGE.md#fast-path)
-- Need a specific control name: go to [Panel Reference](#panel-reference)
+</div>
 
-## Quick Navigation
+---
 
-| I need to... | Go here |
-|---|---|
-| connect ports and start a test | [Fast Path](docs/QUICKSTART_ONE_PAGE.md#fast-path) |
-| understand every button in the app | [Panel Reference](#panel-reference) |
-| change parser fields and units | [Generic Sample Format (Parser + Mapping)](#generic-sample-format-parser-mapping) |
-| compare current run to an old session | [Session Plot and Comparison](#session-plot-and-comparison) |
-| find where files are saved | [Output Files and Folder Structure](#output-files-and-folder-structure) |
-| troubleshoot run issues | [Troubleshooting by Symptom](#troubleshooting-by-symptom) |
+## 📖 Table of Contents
 
-## FAQ (Quick Answers)
+| Section | Description |
+|---------|-------------|
+| [Quick Start](#-quick-start) | Get running in 5 minutes |
+| [Features](#-features) | What's new in v1.5.0 |
+| [User Interface](#-user-interface) | Layout, panels, and tab views |
+| [Serial Sniffer](#-serial-port-sniffer) | Traffic monitoring & bridge modes |
+| [Sample Parser](#-sample-parser-configuration) | Configure field parsing |
+| [Session Management](#-session-management) | Save, load, compare sessions |
+| [Troubleshooting](#-troubleshooting) | Common issues & fixes |
+| [Developer Guide](#-developer-guide) | Build from source |
 
-| Question | Short answer | Details |
-|---|---|---|
-| How do I start a run fast? | Connect port, fill `Operator`, set `Samples`, click `Run Test`. | [Fast Path](docs/QUICKSTART_ONE_PAGE.md#fast-path) |
-| Why is `Run Test` disabled? | No connected port, missing `Operator`, or run already active. | [Troubleshooting by Symptom](#troubleshooting-by-symptom) |
-| Where do I change parser settings? | Open the `Sample Setup` tab or click `Config`. | [Generic Sample Format (Parser + Mapping)](#generic-sample-format-parser-mapping) |
-| How do I compare to a previous session? | Open `Session Plot`, then load a reference session JSON. | [Session Plot and Comparison](#session-plot-and-comparison) |
-| Where are output files saved? | Under `Results Root` in session and per-serial folders. | [Output Files and Folder Structure](#output-files-and-folder-structure) |
-| Can I test multiple ports at once? | Yes, runs execute in parallel across connected ports. | [Actions](#actions) |
-| How do I export session results? | Click `Save JSON` in `Actions`. | [Actions](#actions) |
-| How do I export serial console traffic? | Use `Export Console CSV` in `Serial Consoles`. | [Serial Consoles](#serial-consoles) |
-| How do I hide or show sample CSV paths? | Click `CSV Column` in `Actions`. | [Actions](#actions) |
-| What do `PASS`, `WARN`, `FAIL` mean? | They are noise-based severity levels. | [Severity Logic](#severity-logic) |
+---
 
-## What This Application Does
+## 🚀 Quick Start
 
-SBS DSW is a bench workflow tool for digital sensors. It combines:
+### First-Time Setup
 
-- multi-port serial connection management (up to 10 COM ports)
-- repeatable sample-based test execution
-- live plotting during runs
-- configurable sample parsing and field mapping
-- per-port serial debug consoles
-- session history, comparison plotting, and exportable artifacts
+1. **Launch** the application (`sbs_dsw.exe` or run from source)
+2. **Connect** your sensor via USB-to-serial adapter
+3. **Configure** in ~60 seconds, then start testing
 
-## What Is New In `v1.3.0`
+### 5-Minute Workflow
 
-- Built-in web updater for packaged `sbs_dsw.exe`:
-  - checks a hosted manifest URL
-  - downloads newer exe builds
-  - verifies optional SHA256
-  - swaps executable on restart without manual reinstall
-- New updater controls:
-  - header link: `Update`
-  - `Actions` button: `Check Update`
-  - `Actions` controls: `Auto Check Updates`, `Update Feed URL`
-- Added local update server tooling:
-  - `tools/update_server/publish_update.py`
-  - `tools/update_server/serve_updates.py`
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  1. CONNECTION                                                  │
+│     • Click "Refresh" → Select COM port → Set baud rate        │
+│     • Click "▶ Connect"                                         │
+├─────────────────────────────────────────────────────────────────┤
+│  2. TEST SETUP                                                  │
+│     • Enter Operator name (required)                            │
+│     • Set Samples count (minimum 20)                            │
+│     • Verify Results Root folder                                │
+├─────────────────────────────────────────────────────────────────┤
+│  3. RUN TEST                                                    │
+│     • Click "▶ Run Test" in Actions                             │
+│     • Watch Live Plot tab (auto-opens)                          │
+│     • Results appear when complete (auto-switches)              │
+├─────────────────────────────────────────────────────────────────┤
+│  4. SAVE                                                        │
+│     • Click "Save" to export session JSON                       │
+│     • Sample CSVs saved automatically per-unit                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-## What Was New In `v1.2.0`
+---
 
-- Help link navigation fixed in packaged app (`Help` no longer resolves section links to `_MEI...` directory index pages).
+## ✨ Features
 
-- Header quick actions: `Results`, `Live`, `Config`, `Reset`
-- Config Mode for parser setup-first workflow
-- Generic Sample Format editor:
-  - quick setup from one sample line
-  - parser profiles (`Save Profile` / `Load Profile`)
-  - per-field units and scaling
-  - derived expressions
-  - min/max/stuck-run rule flags
-- Parallel multi-port batch runs with `Runs`, `Delay (s)`, and `Runs left`
-- Session comparison plot with reference JSON loading
-- Detachable serial console and display modes (`ASCII`, `HEX`, `DEC`, `BIN`)
+### What's New in v1.5.0
 
-## 5-Minute Quickstart
+| Feature | Description |
+|---------|-------------|
+| **Visual Documentation** | Professional SVG wireframe diagrams showing UI layout and workflows |
+| **Enhanced README** | Embedded diagrams for Live Plot, Console, Setup, and Sniffer modes |
 
-1. Launch `sbs_dsw.exe`.
-2. In `Connection`, click `Refresh Ports`, choose COM port and baud, then click `Connect Selected` (or `Connect All`).
-3. In `Test Setup`, enter `Operator`, set `Samples` (minimum 20), and confirm `Results Root`.
-4. In `Actions`, set `Runs` and optional `Delay (s)`, then click `Run Test`.
-5. Monitor `Live Plot`, `Run Log`, and `Port Station View`.
-6. Review completed rows in `Test Results`.
-7. Click `Save JSON` when done.
+### Core Features (v1.4)
 
-## Command Examples
+| Feature | Description |
+|---------|-------------|
+| **Modern Dark Theme** | Refined styling with teal accents, consistent button hierarchy |
+| **Smart Layouts** | Auto-collapse panels during tests for maximum plot visibility |
+| **Max View Mode** | One-click toggle to hide all controls and maximize workspace |
+| **Serial Sniffer** | View raw hex/ASCII data from any COM port |
+| **Mirror Mode** | Sniff traffic while routing through internal handlers |
+| **com0com Bridge** | Intercept traffic between external apps and hardware |
+| **Clearer UI** | All buttons use readable text labels instead of unicode symbols |
 
-### Run from source checkout
+### Core Capabilities
+
+- **Multi-Port Testing** — Connect up to 10 COM ports simultaneously
+- **Parallel Batch Runs** — Execute tests across all ports with configurable delays
+- **Live Plotting** — Real-time visualization during active runs
+- **Flexible Parser** — Configure delimiters, regex, scaling, and derived fields
+- **Session History** — Compare current results against reference sessions
+- **Debug Console** — Per-port serial terminal with HEX/ASCII/DEC/BIN modes
+- **Auto-Update** — Built-in updater checks your hosted manifest URL
+
+---
+
+## 🖥️ User Interface
+
+### Layout Overview
+
+<div align="center">
+<img src="docs/images/dashboard-layout.svg" alt="Dashboard Layout" width="700">
+</div>
+
+<details>
+<summary><strong>Text Diagram (fallback)</strong></summary>
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│  HEADER BAR                                                            │
+│  [Help] [About] [Update] [Results] [Live] [Config] [Reset]             │
+├────────────────────────────────────────────────────────────────────────┤
+│  CONNECTION PANEL                    ┌─ PORT STATION ─────────────────┐│
+│  COM Port [▼] Baud [▼] [Refresh]     │ Slot 1: COM5 - CONNECTED      ││
+│  [▶ Connect] [Reconnect] [Disconnect]│ Slot 2: COM6 - RUNNING        ││
+│  [▶ All] [◼ All] [≡ Ports]           │ Slot 3: --                    ││
+├──────────────────────────────────────┴────────────────────────────────┤
+│  TEST SETUP (collapsible)                                              │
+│  Operator: [________] Bath ID: [________] Notes: [________]            │
+│  Bath Temp: [____] Salinity: [____] Samples: [____] Results Root: [...] │
+├────────────────────────────────────────────────────────────────────────┤
+│  ACTIONS                                                               │
+│  [▶ Run Test] [Reset] [Save]  |  [Live] [Console] [Detach]             │
+│  [Plot] [Load] [Reload] [CSV Col]  |  [□ Max View]                     │
+│  Runs: [__] Delay: [__]s  |  🌙 Dark  |  Mode: ○ Prod ○ Dev            │
+├────────────────────────────────────────────────────────────────────────┤
+│  ┌─ TABS ─────────────────────────────────────────────────────────────┐│
+│  │ 📋 Results │ 📈 Live │ ⌨ Console │ 🔍 Sniffer │ 📜 Log │ ⚙ Setup │ ││
+│  ├─────────────────────────────────────────────────────────────────────┤│
+│  │                                                                     ││
+│  │                    [Tab Content Area]                               ││
+│  │                                                                     ││
+│  └─────────────────────────────────────────────────────────────────────┘│
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+</details>
+
+### Panel Reference
+
+<details>
+<summary><strong>Connection Panel</strong></summary>
+
+| Control | Action |
+|---------|--------|
+| **Refresh** | Scan for available COM ports |
+| **▶ Connect** | Open selected port at chosen baud rate |
+| **Reconnect** | Reconnect selected port (useful after baud change) |
+| **Disconnect** | Close selected port |
+| **▶ All** | Connect all detected ports |
+| **◼ All** | Disconnect all ports |
+| **≡ Ports** | Toggle Port Station visibility |
+
+</details>
+
+<details>
+<summary><strong>Test Setup Fields</strong></summary>
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| **Operator** | ✅ Yes | Your name/ID for traceability |
+| **Bath ID** | No | Test fixture identifier |
+| **Notes** | No | Free-form run notes |
+| **Bath Temp (C)** | No | Environmental metadata |
+| **Salinity (PSU)** | No | Environmental metadata |
+| **Samples** | ✅ Yes | Samples per run (minimum 20) |
+| **Results Root** | ✅ Yes | Output folder for all files |
+
+</details>
+
+<details>
+<summary><strong>Action Buttons</strong></summary>
+
+| Button | Description |
+|--------|-------------|
+| **▶ Run Test** | Start parallel test on all connected ports |
+| **Reset** | Clear current session and start fresh |
+| **Save** | Export session to JSON file |
+| **Live** | Switch to Live Plot tab |
+| **Console** | Switch to Serial Console tab |
+| **Detach** | Pop out console to separate window |
+| **Plot** | Open session comparison plot |
+| **Load** | Load a saved session JSON |
+| **Reload** | Refresh current session data |
+| **CSV Col** | Toggle sample CSV path column visibility |
+| **□ Max View** | Collapse all panels for maximum tab space |
+
+</details>
+
+<details>
+<summary><strong>Run Controls</strong></summary>
+
+| Control | Description |
+|---------|-------------|
+| **Runs** | Number of consecutive runs per port (1-50) |
+| **Delay (s)** | Wait time between runs in a batch |
+| **🌙 Dark** | Toggle dark/light theme |
+| **Mode** | Switch between Production/Development modes |
+| **Units tested** | Count of unique serial numbers this session (max 10) |
+| **Runs left** | Remaining runs in current batch |
+
+</details>
+
+### Tab Views
+
+<details>
+<summary><strong>📈 Live Plot Tab</strong></summary>
+
+Real-time visualization during active runs. Auto-opens when test starts.
+
+<div align="center">
+<img src="docs/images/live-plot.svg" alt="Live Plot Tab" width="650">
+</div>
+
+| Control | Description |
+|---------|-------------|
+| **Auto Y** | Auto-scale Y axis to fit data |
+| **Points** | Number of visible data points (default: 100) |
+| **Filter Ports** | Show/hide specific port traces |
+| **Pause** | Freeze current view while run continues |
+
+</details>
+
+<details>
+<summary><strong>⌨ Console Tab</strong></summary>
+
+Raw serial I/O with timestamped TX/RX logging.
+
+<div align="center">
+<img src="docs/images/console-tab.svg" alt="Console Tab" width="650">
+</div>
+
+| Control | Description |
+|---------|-------------|
+| **Clear** | Clear console buffer |
+| **Copy Text** | Copy console text to clipboard |
+| **Timestamps** | Toggle timestamp display |
+| **Show Hex** | Show hexadecimal representation |
+| **Command** | Type and send commands to connected device |
+
+</details>
+
+---
+
+## 🔍 Serial Port Sniffer
+
+The **Sniffer** tab provides powerful tools for monitoring and intercepting serial traffic.
+
+<div align="center">
+<img src="docs/images/sniffer-modes.svg" alt="Sniffer Modes" width="700">
+</div>
+
+### Direct Sniffing Mode
+
+Monitor raw data from any COM port:
+
+1. Select a COM port from the dropdown
+2. Click **Start Sniffing**
+3. View data in your preferred format (HEX, ASCII, DEC, BIN)
+
+| Option | Description |
+|--------|-------------|
+| **Display mode** | Choose HEX, ASCII, DEC, or BIN output |
+| **Show timestamps** | Prepend receive time to each line |
+| **Auto scroll** | Keep newest data visible |
+| **Clear** | Clear the capture buffer |
+| **Export** | Save captured data to file |
+| **Copy** | Copy captured data to clipboard |
+
+### Mirror Mode
+
+Route data through your application while viewing traffic:
+
+```
+┌──────────┐     ┌─────────────────┐     ┌──────────┐
+│  Sensor  │ ──► │  SBS DSW App    │ ──► │  Parser  │
+│          │     │  (displays all) │     │          │
+└──────────┘     └─────────────────┘     └──────────┘
+```
+
+1. Select the sensor's COM port
+2. Enable **Mirror Mode** checkbox
+3. Click **Start Sniffing**
+
+Data flows to internal handlers AND appears in the sniffer display.
+
+### com0com Bridge Mode
+
+Intercept traffic between external applications and hardware:
+
+```
+┌────────────────┐     ┌───────────┐     ┌─────────────────┐     ┌──────────┐
+│ External App   │ ──► │   COM10   │ ──► │   SBS DSW       │ ──► │  Sensor  │
+│ (uses COM10)   │ ◄── │ (virtual) │ ◄── │   Bridge        │ ◄── │  (COM5)  │
+└────────────────┘     └───────────┘     │   (displays)    │     └──────────┘
+                                         └─────────────────┘
+```
+
+**Prerequisites:**
+- Install [com0com](https://sourceforge.net/projects/com0com/) virtual null-modem driver
+- Create a port pair (e.g., COM10 ↔ COM11)
+
+**Setup Steps:**
+
+1. Configure your external application to use COM10 (virtual)
+2. Connect your sensor hardware to COM5 (physical)
+3. In the Sniffer tab:
+   - Set **Virtual Port (app-facing)**: COM10
+   - Set **Physical Port (sensor)**: COM5
+   - Click **Start Bridge**
+
+**Buttons:**
+- **Detect com0com** — Auto-discover virtual port pairs
+- **?** — Show inline help dialog
+
+---
+
+## ⚙ Sample Parser Configuration
+
+Open the **Setup** tab or click **Config** in the header.
+
+<div align="center">
+<img src="docs/images/setup-parser.svg" alt="Setup Tab" width="700">
+</div>
+
+### Quick Setup
+
+```
+1. Paste a sample line:    1234,56.78,90.12,OK
+2. Set delimiter:          ,
+3. Click:                  [Quick Setup + Plot]
+```
+
+### Parser Controls
+
+| Setting | Description |
+|---------|-------------|
+| **Sample Cmd** | Command sent to request each sample (default: `tsr`) |
+| **Delimiter** | Character separating fields (comma, space, tab, etc.) |
+| **Trim Prefix** | Remove fixed prefix before parsing |
+| **Start Token** | Skip first N tokens |
+| **Regex** | Extract payload with regular expression |
+
+### Field Editor
+
+Each parsed field can be configured:
+
+| Column | Description |
+|--------|-------------|
+| **Field Key** | Internal identifier |
+| **Description** | Human-readable name |
+| **Unit** | Display unit (ns, mV, °C, etc.) |
+| **Scale** | Multiplier (raw, milli, micro, kilo) |
+| **Min / Max** | Validation thresholds |
+| **StuckN** | Flag if value unchanged for N samples |
+| **Derived Expr** | Calculate from other fields |
+| **Live** | Show in live plot |
+| **Session** | Include in session stats |
+
+### Profile Management
+
+| Button | Action |
+|--------|--------|
+| **Quick Setup + Plot** | Auto-configure from sample line |
+| **Load From Example** | Populate fields from example |
+| **Apply Measureands** | Apply current field configuration |
+| **Save Profile** | Save configuration to JSON file |
+| **Load Profile** | Load configuration from JSON file |
+| **Reset Default** | Restore factory defaults |
+
+---
+
+## 📊 Session Management
+
+### Session Workflow
+
+```
+Test Execution ──► Results Table ──► Save JSON ──► Load & Compare Later
+```
+
+### Files Generated
+
+Each test run creates:
+
+| File | Contents |
+|------|----------|
+| `sbe83_session_<id>.json` | Complete session with all runs |
+| `sbe83_session_<id>.csv` | Tabular session summary |
+| `SBS83_SN<serial>_<timestamp>_samples.csv` | Raw sample data |
+| `SBS83_SN<serial>_<timestamp>.log` | DS/DC output and metadata |
+| `SBS83_SN<serial>_<timestamp>_summary.json` | Per-run metrics |
+
+### Folder Structure
+
+```
+Results Root/
+├── sessions/
+│   └── PreCalTest/
+│       ├── sbe83_session_*.csv
+│       ├── sbe83_session_*.json
+│       └── profiles/
+│           └── *.json
+└── <serial>/
+    └── PreCalTest/
+        ├── SBS83_SN*_samples.csv
+        ├── SBS83_SN*_summary.json
+        └── SBS83_SN*.log
+```
+
+### Session Comparison Plot
+
+Compare current results against a reference session:
+
+1. Click **Plot** in Actions
+2. Select a metric to compare
+3. Click **Load Reference Session** to load a saved JSON
+4. Filter by serial number in either session
+5. Use **Pause Plot** to freeze updates
+
+### Severity Classifications
+
+| Level | Criteria |
+|-------|----------|
+| **PASS** | Red noise ≤ 10 ns AND Blue noise ≤ 10 ns |
+| **WARN** | Either noise > 10 ns AND ≤ 20 ns |
+| **FAIL** | Either noise > 20 ns |
+| **UNKNOWN** | Insufficient numeric data |
+
+---
+
+## 🔧 Troubleshooting
+
+<details>
+<summary><strong>"Run Test" button is disabled</strong></summary>
+
+**Possible causes:**
+- No port connected → Connect at least one COM port
+- Missing required field → Fill in **Operator** field
+- Run already active → Wait for current run to complete
+
+</details>
+
+<details>
+<summary><strong>No samples collected during test</strong></summary>
+
+**Check:**
+- **Sample Cmd** matches your sensor's command
+- **Baud rate** is correct for your device
+- **Cable/adapter** is properly connected
+- **Delimiter** and **Regex** settings match your data format
+
+</details>
+
+<details>
+<summary><strong>Plot shows flat line or no data</strong></summary>
+
+**Verify:**
+- Selected **Plot field** exists in parser configuration
+- **Unit** and **Scale** settings are appropriate
+- Check **Run Log** for parse errors or timeouts
+
+</details>
+
+<details>
+<summary><strong>Console commands get no response</strong></summary>
+
+**Try:**
+- Toggle **CR** and/or **LF** line endings
+- Click **Read** after **Send** (if not streaming)
+- Confirm port is connected and not busy with a test
+
+</details>
+
+<details>
+<summary><strong>com0com bridge doesn't work</strong></summary>
+
+**Verify:**
+- com0com driver is installed and running
+- Port pair is created (check Device Manager)
+- External app is configured to use the virtual port
+- Physical port is correctly selected for sensor side
+
+</details>
+
+---
+
+## 👨‍💻 Developer Guide
+
+### Run from Source
 
 ```powershell
+# Clone and setup
+git clone <repository>
+cd git_entry
+
+# Create virtual environment
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install .
-python sbs_dsw.py
+
+# Install dependencies
+pip install -e .
+
+# Run application
+python -m engineers_field_kit_multitool.app
 ```
 
-### Run packaged executable
+### Build Executable
 
 ```powershell
-.\dist\sbs_dsw.exe
+# Install PyInstaller
+pip install pyinstaller
+
+# Build (from project root)
+pyinstaller app.spec
+
+# Output: dist/sbs_dsw.exe
 ```
 
-### Inspect latest session outputs
+### Project Structure
 
-```powershell
-Get-ChildItem .\SBE83\sessions\PreCalTest | Sort-Object LastWriteTime -Descending | Select-Object -First 10
+```
+git_entry/
+├── src/engineers_field_kit_multitool/
+│   ├── app.py          # Main application
+│   ├── styles.py       # Theme and styling
+│   └── *_config.json   # Runtime configuration
+├── docs/
+│   └── QUICKSTART_ONE_PAGE.md
+├── tools/update_server/
+│   ├── publish_update.py
+│   └── serve_updates.py
+├── assets/
+│   └── *.ico, *.png
+└── README.md           # This file
 ```
 
-## Web Updater Setup (No GitHub Release Required)
+### Web Updater Setup
 
-`sbs_dsw.exe` now supports web-based self-update using a JSON manifest URL.
+Host your own update server:
 
-In-app controls:
+1. **Publish an update:**
+   ```powershell
+   python tools/update_server/publish_update.py --exe dist/sbs_dsw.exe --version 1.4.0
+   ```
 
-- `Actions -> Check Update`
-- `Actions -> Update Feed URL`
-- `Actions -> Auto Check Updates`
-- Header link: `Update`
+2. **Start server:**
+   ```powershell
+   python tools/update_server/serve_updates.py --host 0.0.0.0 --port 8080
+   ```
 
-Manifest JSON format (host this on any HTTP/HTTPS endpoint):
+3. **Configure app:**
+   Set **Update Feed URL** to `http://<your-server>:8080/manifest.json`
 
+**Manifest format:**
 ```json
 {
-  "version": "1.3.0",
-  "url": "https://your-server.example.com/sbs_dsw.exe",
-  "sha256": "optional_64_char_sha256_hex",
-  "notes": "Optional release notes shown in the prompt."
+  "version": "1.4.0",
+  "url": "https://your-server.com/sbs_dsw.exe",
+  "sha256": "optional_64_char_hash",
+  "notes": "Release notes shown to user"
 }
 ```
 
-Example file in repo: `docs/update_manifest_example.json`
+---
 
-### Create Your Own Update Server (included in this repo)
+## 📸 Screenshots
 
-1. Publish the latest exe + manifest:
+> **Note:** Add screenshots to `docs/images/` folder for visual documentation.
 
-```powershell
-python .\tools\update_server\publish_update.py --exe .\dist\sbs_dsw.exe --version 1.3.0 --notes "Bug fixes"
+Recommended screenshots:
+1. Main dashboard with connection panel and port station
+2. Live Plot during active test run  
+3. Sample Setup tab with parser configuration
+4. Session comparison plot with reference loaded
+5. Serial Sniffer in bridge mode
+6. Console tab with hex display mode
+
+To add screenshots, create `docs/images/` folder and reference them like:
+```markdown
+![Main Dashboard](docs/images/dashboard.png)
 ```
 
-If your built file name/path is different, pass that path to `--exe` (for example `.\dist\.exe`).
+---
 
-2. Start the server:
+## 📄 License
 
-```powershell
-python .\tools\update_server\serve_updates.py --host 0.0.0.0 --port 8080
-```
+See [LICENSE.txt](LICENSE.txt) for details.
 
-3. In the app, set `Update Feed URL` to:
+---
 
-```text
-http://<your-server-ip>:8080/manifest.json
-```
+<div align="center">
 
-More details: `tools/update_server/README.md`
+**Sea-Bird Scientific Digital Sensor Workbench** — Built for precision testing
 
-How future updates work:
+*v1.4.0 • © Sea-Bird Scientific*
 
-1. Build your new `sbs_dsw.exe`.
-2. Upload it to your web server (same URL is fine).
-3. Update the manifest `version` (and `sha256` if used).
-4. Clients click `Check Update` (or auto-check on startup) and install directly from that URL.
-
-Optional override:
-
-- Set env var `SBS_DSW_UPDATE_MANIFEST_URL` to force a manifest URL for that machine/session.
-
-## UI Map
-
-- Header links: `Help`, `About`, `Update`, `Results`, `Live`, `Config`, `Reset`
-- Main cards: `Connection`, `Port Station View`, `Test Setup`, `Actions`
-- Tabs: `Test Results`, `Live Plot`, `Run Log`, `Serial Consoles`
-
-## Core Workflow
-
-1. Connect ports in `Connection`.
-2. Enter run metadata in `Test Setup`.
-3. Start run from `Actions`.
-4. Watch live behavior in `Live Plot` and status in `Run Log`.
-5. Review metrics in `Test Results`.
-6. Save session and exports.
-
-## Panel Reference
-
-### Connection
-
-- `Refresh Ports`: re-scan available COM ports
-- `Connect Selected`: open selected COM port
-- `Reconnect @ Baud`: reconnect selected port at current baud
-- `Disconnect Selected`: close selected COM port
-- `Connect All`: connect all detected ports (max 10)
-- `Disconnect All`: close all connected ports
-- `Hide/Show Port Station`: collapse or expand card grid
-
-Status row:
-
-- connected count
-- connected list
-
-### Port Station View
-
-Each card shows:
-
-- slot
-- COM port
-- serial (`SN:`)
-- state badge
-
-Typical status flow: `CONNECTED` -> `RUNNING` -> `PASS/WARN/FAIL` -> `COMPLETE`.
-
-### Test Setup
-
-| Field | Purpose | Required |
-|---|---|---|
-| `Operator` | Operator identifier for traceability | Yes |
-| `Bath ID` | Optional setup ID | No |
-| `Notes` | Run notes | No |
-| `Bath Temp (C)` | Environmental metadata | No |
-| `Salinity (PSU)` | Environmental metadata | No |
-| `Samples` | samples per run (minimum 20) | Yes |
-| `Results Root` | top folder where output folders/files are written | Yes |
-
-### Actions
-
-Buttons:
-
-- `Run Test`: starts parallel runs on all connected ports
-- `Save JSON`: saves current session rows to session JSON
-- `Reset`: starts a new session and clears table
-- `Live Plot`: jumps to Live Plot tab
-- `Console`: jumps to Serial Consoles tab
-- `Detach`: undock/dock console tab
-- `Session Plot`: plot current session
-- `Load Session`: load a different session JSON and plot
-- `Reload JSON`: reload current session JSON for plotting
-- `CSV Column`: show/hide `sample_csv` column in results table
-- `Check Update`: manually check update feed and install if newer
-
-Run controls:
-
-- `Runs`: batch count per connected port
-- `Delay (s)`: wait time between runs in a batch
-- `Dark Mode`: theme toggle
-- `Auto Check Updates`: startup update check toggle
-- `Update Feed URL`: configure hosted manifest URL
-- `Units tested`: unique serial counter (session limit is 10)
-- `Runs left`: active batch progress by port
-
-### Test Results
-
-Table includes timestamp, port, serial, noise/voltage stats, flags, and sample CSV path.
-
-Tips:
-
-- click column headers to sort
-- use `CSV Column` to show/hide sample CSV path
-- inspect `flags` for limit and data-quality issues
-
-### Live Plot
-
-Controls:
-
-- `Plot field`, `Refresh Plot`
-- `Auto Y`, `Ymin`, `Ymax`
-- `Points`
-- `Filter Ports`, `Visible Ports`
-- `X Start`, `X End`
-- `Std Dev`, `Samples`
-
-Right pane shows recent parsed sample lines during active runs.
-
-### Serial Consoles
-
-Per-port controls:
-
-- `Send`, `Read`, `Stream`
-
-Global console controls:
-
-- `Clear Selected Debug Tab`
-- `Export Console CSV`
-- `CR`, `LF`
-- display mode: `ASCII`, `HEX`, `DEC`, `BIN`
-
-## Generic Sample Format (Parser + Mapping)
-
-Open the `Sample Setup` tab, or click `Config` in the header.
-
-Quick setup:
-
-1. Paste one line into `Example sample`.
-2. Set `Delimiter`.
-3. Click `Quick Setup + Plot`.
-
-Parser controls:
-
-- `Sample Cmd`: command sent for each sample (default `tsr`)
-- `Trim Prefix`: remove fixed prefix before split
-- `Start Token`: ignore first N tokens
-- `Regex`: extract payload before split
-
-Field editor columns:
-
-- `Field Key`, `Description`
-- `Unit`, `Scale` (raw/milli/micro/kilo)
-- `Min`, `Max`, `StuckN`
-- `Derived Expr`
-- `Live`, `Session`, `Default`
-
-Profiles and apply:
-
-- `Save Profile`, `Load Profile`
-- `Apply Measureands`
-- `Reset Default`
-
-## Session Plot and Comparison
-
-`Session Plot` opens a dedicated plot window.
-
-Use it to:
-
-- choose a numeric metric
-- filter current session by serial
-- load a reference session JSON
-- filter reference serials
-- pause/resume redraws
-
-## Output Files and Folder Structure
-
-Default output root for packaged exe:
-
-- `<exe folder>/SBE83`
-
-Within `Results Root`:
-
-- `sessions/PreCalTest/sbe83_session_<session_id>.csv`
-- `sessions/PreCalTest/sbe83_session_<session_id>.json`
-- `sessions/PreCalTest/profiles/*.json`
-- `<serial>/PreCalTest/SBS83_SN<serial>_<timestamp>_samples.csv`
-- `<serial>/PreCalTest/SBS83_SN<serial>_<timestamp>.log`
-- `<serial>/PreCalTest/SBS83_SN<serial>_<timestamp>_summary.json`
-
-## Severity Logic
-
-- `PASS`: both red/blue noise <= 10 ns
-- `WARN`: either noise > 10 ns and <= 20 ns
-- `FAIL`: either noise > 20 ns
-- `UNKNOWN`: insufficient numeric data
-
-## Troubleshooting by Symptom
-
-### `Run Test` is disabled
-
-- connect at least one port
-- fill `Operator`
-- make sure no run is currently active
-
-### No samples collected
-
-- verify `Sample Cmd`
-- verify baud and cable path
-- verify delimiter/regex/start token settings
-
-### Plot looks flat or incorrect
-
-- verify selected `Plot field` exists in parser config
-- verify unit/scale and min/max settings
-- check `Run Log` for parse or timeout issues
-
-### Console command has no response
-
-- adjust `CR` and `LF`
-- use `Read` after `Send`
-- confirm the port is connected and idle
-
-## Documentation Map
-
-## Screenshot Guidance (Optional)
-
-If you want visual callouts, add images under `docs/images/` for:
-
-1. main dashboard with Connection + Actions
-2. Live Plot during active run
-3. Sample Setup tab with Generic Sample Format
-4. Session Plot with reference session loaded
-5. Serial Console with stream and display mode controls
-
-## Soon To Be Expanded
-
-- Standalone quickstart addendum draft: `docs/QUICKSTART_ONE_PAGE.md`
+</div>
+]]>
