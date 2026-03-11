@@ -82,6 +82,12 @@ COMM_RETRY_TIMEOUT_S = 12.0
 COMM_RETRY_INTERVAL_S = 1.0
 SAMPLE_RETRY_TIMEOUT_S = 8.0
 SAMPLE_RETRY_INTERVAL_S = 0.6
+CONSOLE_QUICK_READ_MAX_WINDOW_S = 4.0
+CONSOLE_QUICK_READ_IDLE_WINDOW_S = 0.9
+CONSOLE_QUICK_READ_LINE_TIMEOUT_S = 0.12
+CONSOLE_MANUAL_READ_MAX_WINDOW_S = 8.0
+CONSOLE_MANUAL_READ_IDLE_WINDOW_S = 1.5
+CONSOLE_MANUAL_READ_LINE_TIMEOUT_S = 0.15
 
 TSR_FIELDS = [
     "red_phase",
@@ -509,6 +515,32 @@ class SBE83GuiApp:
         pos_y = max(0, (screen_h - target_h) // 3)
         self.root.geometry(f"{target_w}x{target_h}+{pos_x}+{pos_y}")
 
+    def _geometry_is_visible(self, geometry: str) -> bool:
+        if not isinstance(geometry, str):
+            return False
+        text = geometry.strip()
+        if not text:
+            return False
+        m = re.match(r"^\s*(\d+)x(\d+)([+-]\d+)([+-]\d+)\s*$", text)
+        if not m:
+            return False
+        try:
+            w = int(m.group(1))
+            h = int(m.group(2))
+            x = int(m.group(3))
+            y = int(m.group(4))
+            screen_w = int(self.root.winfo_screenwidth())
+            screen_h = int(self.root.winfo_screenheight())
+        except Exception:
+            return False
+        if w < 200 or h < 120:
+            return False
+        min_visible_w = min(200, max(80, w // 4))
+        min_visible_h = min(120, max(60, h // 4))
+        overlap_w = min(x + w, screen_w) - max(x, 0)
+        overlap_h = min(y + h, screen_h) - max(y, 0)
+        return overlap_w >= min_visible_w and overlap_h >= min_visible_h
+
     def _apply_saved_window_state(self):
         layout = self.app_config.get("layout_state", {})
         if not isinstance(layout, dict):
@@ -523,7 +555,9 @@ class SBE83GuiApp:
             geometry = self._last_normal_geometry.strip()
         if isinstance(geometry, str) and geometry.strip():
             try:
-                self.root.geometry(geometry.strip())
+                candidate = geometry.strip()
+                if self._geometry_is_visible(candidate):
+                    self.root.geometry(candidate)
             except Exception:
                 pass
         if state == "zoomed":
@@ -3716,30 +3750,49 @@ exit /b 0
             ser.write(payload_bytes)
             self.debug_tabs[port]["cmd_var"].set("")
             self._ensure_console_trailing_newline(port)
-            threading.Thread(target=self._read_debug_responses_quick, args=(port, 0.35), daemon=True).start()
+            threading.Thread(target=self._read_debug_responses_quick, args=(port,), daemon=True).start()
         except Exception as exc:
             self.log(f"[{port}] Manual command failed: {exc}")
             messagebox.showerror("Manual Command Error", f"{port}: {exc}")
 
-    def _read_debug_responses_quick(self, port, window_s=0.35):
-        ser = self.serial_pool.get(port)
-        if not ser or not ser.is_open or self.port_is_running(port) or self.stream_enabled.get(port):
-            return
+    def _drain_debug_responses(self, ser, port=None, max_window_s=2.5, idle_window_s=0.45, line_timeout_s=0.08):
         old_timeout = ser.timeout
+        rx_count = 0
+        deadline = time.time() + max_window_s
+        last_rx_at = time.time()
         try:
-            ser.timeout = 0.08
-            deadline = time.time() + window_s
+            ser.timeout = line_timeout_s
             while time.time() < deadline and not self.shutdown_event.is_set():
-                self._read_debug_line(ser, port=port)
-        except Exception as exc:
-            self.log(f"[{port}] Quick read failed: {exc}")
+                raw = self._read_debug_line(ser, port=port)
+                if raw:
+                    rx_count += 1
+                    last_rx_at = time.time()
+                    continue
+                if rx_count > 0 and (time.time() - last_rx_at) >= idle_window_s:
+                    break
         finally:
             try:
                 ser.timeout = old_timeout
             except Exception:
                 pass
+        return rx_count
 
-    def read_debug_responses(self, port, window_s=1.2):
+    def _read_debug_responses_quick(self, port):
+        ser = self.serial_pool.get(port)
+        if not ser or not ser.is_open or self.port_is_running(port) or self.stream_enabled.get(port):
+            return
+        try:
+            self._drain_debug_responses(
+                ser,
+                port=port,
+                max_window_s=CONSOLE_QUICK_READ_MAX_WINDOW_S,
+                idle_window_s=CONSOLE_QUICK_READ_IDLE_WINDOW_S,
+                line_timeout_s=CONSOLE_QUICK_READ_LINE_TIMEOUT_S,
+            )
+        except Exception as exc:
+            self.log(f"[{port}] Quick read failed: {exc}")
+
+    def read_debug_responses(self, port):
         if self.port_is_running(port):
             messagebox.showwarning("Port Busy", f"{port} is running a test. Wait for completion before manual reads.")
             return
@@ -3750,18 +3803,17 @@ exit /b 0
         if not ser or not ser.is_open:
             messagebox.showwarning("Not Connected", f"{port} is not connected.")
             return
-        old_timeout = ser.timeout
-        rx_count = 0
         try:
-            ser.timeout = 0.15
-            deadline = time.time() + window_s
-            while time.time() < deadline:
-                raw = self._read_debug_line(ser, port=port)
-                if not raw:
-                    continue
-                rx_count += 1
-        finally:
-            ser.timeout = old_timeout
+            rx_count = self._drain_debug_responses(
+                ser,
+                port=port,
+                max_window_s=CONSOLE_MANUAL_READ_MAX_WINDOW_S,
+                idle_window_s=CONSOLE_MANUAL_READ_IDLE_WINDOW_S,
+                line_timeout_s=CONSOLE_MANUAL_READ_LINE_TIMEOUT_S,
+            )
+        except Exception as exc:
+            self.log(f"[{port}] Manual read failed: {exc}")
+            rx_count = 0
         if rx_count == 0:
             self.log(f"[{port}] Manual read: no response")
 
@@ -4161,7 +4213,7 @@ exit /b 0
         
         bridge_info = ttk.Label(
             bridge_frame,
-            text="Creates a pass-through bridge: External App → Virtual Port ↔ Bridge ↔ Real Port → Device",
+            text="Standalone pass-through bridge: External App → Virtual Port ↔ Bridge ↔ Real Port → Device",
             style="Muted.TLabel"
         )
         bridge_info.pack(fill=tk.X, pady=(0, 6))
@@ -4187,8 +4239,8 @@ exit /b 0
         self.bridge_virtual_combo = ttk.Combobox(
             bridge_controls,
             textvariable=self.bridge_virtual_port_var,
-            state="readonly",
-            width=10,
+            state="normal",
+            width=14,
             values=[],
         )
         self.bridge_virtual_combo.pack(side=tk.LEFT, padx=(4, 12))
@@ -4266,8 +4318,22 @@ exit /b 0
         self.bridge_real_combo["values"] = all_ports
         if all_ports:
             self.bridge_real_port_var.set(all_ports[0])
-        # Leave virtual port empty until user clicks Detect
+        # Leave virtual port empty until user clicks Detect (manual entry is allowed).
         self.bridge_virtual_combo["values"] = []
+
+    def _is_virtual_port_candidate(self, desc: str, hwid: str) -> bool:
+        marker_text = f"{desc or ''} {hwid or ''}".lower()
+        markers = (
+            "com0com",
+            "com#com",
+            "cnca",
+            "cncb",
+            "serial port emulator",
+            "virtual serial",
+            "null-modem",
+            "null modem",
+        )
+        return any(marker in marker_text for marker in markers)
 
     def _start_sniffer(self):
         """Start sniffing the selected serial port."""
@@ -4608,39 +4674,48 @@ exit /b 0
         all_ports = list(list_ports.comports())
         virtual_ports = []
         real_ports = []
-        
+        selected_real = self.bridge_real_port_var.get().strip()
+        port_desc = {}
+
         for p in all_ports:
             port = p.device
             desc = (p.description or "").lower()
             hwid = (p.hwid or "").lower()
-            
-            # com0com ports typically have these identifiers
-            is_virtual = (
-                "com0com" in desc or
-                "com0com" in hwid or
-                "cnca" in hwid or  # com0com port A
-                "cncb" in hwid or  # com0com port B
-                "virtual" in desc.lower() or
-                "null" in desc.lower()
-            )
-            
+            port_desc[port] = (p.description or "").strip()
+            is_virtual = self._is_virtual_port_candidate(desc, hwid)
             if is_virtual:
                 virtual_ports.append(f"{port} ({p.description})")
             else:
                 real_ports.append(port)
-        
+
+        used_fallback = False
+        if not virtual_ports:
+            fallback_ports = [p.device for p in all_ports if p.device != selected_real]
+            if fallback_ports:
+                used_fallback = True
+                virtual_ports = [f"{port} ({port_desc.get(port, '')})" for port in fallback_ports]
+
+        if not real_ports:
+            real_ports = [p.device for p in all_ports]
+
         self.bridge_real_combo["values"] = real_ports
         self.bridge_virtual_combo["values"] = virtual_ports
-        
+
         if virtual_ports:
             self.bridge_virtual_port_var.set(virtual_ports[0].split(" ")[0])
-            self.bridge_status_var.set(f"Found {len(virtual_ports)} virtual port(s)")
-            self.log(f"com0com: Found {len(virtual_ports)} virtual port(s)")
+            if used_fallback:
+                self.bridge_status_var.set(
+                    f"No explicit com0com signature; showing {len(virtual_ports)} candidate port(s)"
+                )
+                self.log("com0com: No explicit virtual-port signature found; using fallback candidates.")
+            else:
+                self.bridge_status_var.set(f"Found {len(virtual_ports)} virtual port(s)")
+                self.log(f"com0com: Found {len(virtual_ports)} virtual port(s)")
         else:
-            self.bridge_status_var.set("No com0com ports found")
-            self.log("com0com: No virtual ports detected. Install com0com first.")
-        
-        if real_ports:
+            self.bridge_status_var.set("No virtual ports found (create a com0com pair first)")
+            self.log("com0com: No virtual ports detected. Create/install a com0com pair first.")
+
+        if real_ports and not selected_real:
             self.bridge_real_port_var.set(real_ports[0])
 
     def _start_bridge(self):
@@ -4658,8 +4733,9 @@ exit /b 0
             messagebox.showwarning("Bridge Error", "Real and virtual ports must be different.")
             return
         
-        # Check if ports are in use
-        if real_port in self.serial_pool:
+        # Block only if the real port is actively open in the main terminal.
+        main_ser = self.serial_pool.get(real_port)
+        if main_ser and getattr(main_ser, "is_open", False):
             messagebox.showwarning("Port In Use", f"{real_port} is already connected.\nDisconnect it first.")
             return
         
@@ -4750,7 +4826,7 @@ exit /b 0
         self.bridge_start_btn.configure(state=tk.NORMAL)
         self.bridge_stop_btn.configure(state=tk.DISABLED)
         self.bridge_real_combo.configure(state="readonly")
-        self.bridge_virtual_combo.configure(state="readonly")
+        self.bridge_virtual_combo.configure(state="normal")
         self.sniffer_start_btn.configure(state=tk.NORMAL)
         self.sniffer_mirror_btn.configure(state=tk.NORMAL)
         self.sniffer_status_var.set("● Stopped")
